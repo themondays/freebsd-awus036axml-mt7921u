@@ -1,0 +1,1139 @@
+--- a/sys/compat/linuxkpi/common/include/linux/skbuff.h
++++ b/sys/compat/linuxkpi/common/include/linux/skbuff.h
+@@ -45,6 +45,7 @@
+ #include <linux/compiler.h>
+ #include <linux/spinlock.h>
+ #include <linux/ktime.h>
++#include <linux/slab.h>
+ #include <linux/compiler.h>
+ 
+ #include "opt_wlan.h"
+@@ -979,9 +980,36 @@
+ static inline int
+ pskb_expand_head(struct sk_buff *skb, int x, int len, gfp_t gfp)
+ {
++	uint8_t *head;
++	unsigned int headroom, tailroom, datalen, size;
++
+ 	SKB_TRACE(skb);
+-	SKB_TODO();
+-	return (-ENXIO);
++	if (x < 0 || len < 0)
++		return (-EINVAL);
++
++	if (unlikely(skb_is_nonlinear(skb))) {
++		SKB_TODO();
++		return (-ENXIO);
++	}
++
++	headroom = skb_headroom(skb) + x;
++	tailroom = skb_tailroom(skb) + len;
++	datalen = skb->tail - skb->data;
++	size = headroom + datalen + tailroom;
++
++	head = kmalloc(size, gfp);
++	if (head == NULL)
++		return (-ENOMEM);
++
++	memcpy(head + headroom, skb->data, datalen);
++	kfree(skb->head);
++	skb->head = head;
++	skb->data = head + headroom;
++	skb->tail = skb->data + datalen;
++	skb->end = head + size;
++	skb->truesize = size;
++
++	return (0);
+ }
+ 
+ /* Not really seen this one but need it as symmetric accessor function. */
+@@ -1099,10 +1127,20 @@
+ static inline int
+ skb_pad(struct sk_buff *skb, int pad)
+ {
++	int error;
+ 
+ 	SKB_TRACE(skb);
+-	SKB_TODO();
+-	return (-1);
++	if (pad <= 0)
++		return (0);
++
++	if (skb_tailroom(skb) < pad) {
++		error = pskb_expand_head(skb, 0, pad - skb_tailroom(skb), GFP_ATOMIC);
++		if (error != 0)
++			return (error);
++	}
++
++	memset(skb_tail_pointer(skb), 0, pad);
++	return (0);
+ }
+ 
+ static inline void
+@@ -1149,9 +1187,14 @@
+ static inline int
+ skb_cow_head(struct sk_buff *skb, unsigned int headroom)
+ {
++	unsigned int have;
++
+ 	SKB_TRACE(skb);
+-	SKB_TODO();
+-	return (-1);
++	have = skb_headroom(skb);
++	if (have >= headroom)
++		return (0);
++
++	return (pskb_expand_head(skb, headroom - have, 0, GFP_ATOMIC));
+ }
+ 
+#define	SKB_WITH_OVERHEAD(_s)						\
+--- a/sys/compat/linuxkpi/common/src/linux_80211_macops.c
++++ b/sys/compat/linuxkpi/common/src/linux_80211_macops.c
+@@ -644,12 +644,22 @@ lkpi_80211_mo_wake_tx_queue(struct ieee80211_hw *hw, struct ieee80211_txq *txq)
+ {
+ 	struct lkpi_hw *lhw;
+ 
+ 	lhw = HW_TO_LHW(hw);
+ 	if (lhw->ops->wake_tx_queue == NULL)
+ 		return;
+ 
++	/*
++	 * Linux mac80211 calls the driver wake_tx_queue callback with the txq
++	 * already eligible for ieee80211_next_txq().  FreeBSD LinuxKPI keeps its
++	 * own scheduled_txqs lists, so make non-empty queues visible before mt76
++	 * schedules its worker.
++	 */
++	linuxkpi_ieee80211_schedule_txq(hw, txq, false);
++
+ 	LKPI_80211_TRACE_MO("hw %p txq %p", hw, txq);
+ 	lhw->ops->wake_tx_queue(hw, txq);
+ }
+ 
+ void
+ lkpi_80211_mo_sync_rx_queues(struct ieee80211_hw *hw)
+--- a/sys/compat/linuxkpi/common/src/linux_usb.c
++++ b/sys/compat/linuxkpi/common/src/linux_usb.c
+@@ -862,6 +862,7 @@
+ 	struct usb_interface_descriptor *id;
+ 	struct usb_endpoint_descriptor *ed;
+ 	struct usb_interface *p_ui = NULL;
++	struct usb_interface *p_ui_curr = NULL;
+ 	struct usb_host_interface *p_uhi = NULL;
+ 	struct usb_host_endpoint *p_uhe = NULL;
+ 	usb_size_t size;
+@@ -933,10 +934,14 @@
+ 						p_ui->cur_altsetting = p_uhi - 1;
+ 						p_ui->bsd_iface_index = iface_index;
+ 						p_ui->linux_udev = udev;
++						p_ui->num_altsetting = 1;
++						p_ui_curr = p_ui;
+ 						p_ui++;
+ 					}
+ 					iface_no_curr = iface_no;
+ 					iface_index++;
++				} else if (p_ui_curr) {
++					p_ui_curr->num_altsetting++;
+ 				}
+ 				break;
+ 
+--- a/sys/contrib/dev/mediatek/mt76/mt76.h
++++ b/sys/contrib/dev/mediatek/mt76/mt76.h
+@@ -161,6 +161,7 @@
+ };
+ 
+ struct mt76_queue_entry {
++	struct mt76_dev *dev;
+ 	union {
+ 		void *buf;
+ 		struct sk_buff *skb;
+@@ -186,6 +187,7 @@
+ } __packed __aligned(4);
+ 
+ struct mt76_queue {
++	struct mt76_dev *dev;
+ 	struct mt76_queue_regs __iomem *regs;
+ 
+ 	spinlock_t lock;
+@@ -550,6 +552,7 @@
+ #define MT_NUM_RX_ENTRIES	128
+ #define MCU_RESP_URB_SIZE	1024
+ struct mt76_usb {
++	struct usb_interface *intf;
+ 	struct mutex usb_ctrl_mtx;
+ 	u8 *data;
+ 	u16 data_len;
+@@ -1431,6 +1434,25 @@
+ {
+ #if defined(__FreeBSD__) && !defined(CONFIG_USB)
+ 	return (0);
++#elif defined(__FreeBSD__)
++	struct usb_interface *uintf = dev->usb.intf;
++	struct usb_device *udev = interface_to_usbdev(uintf);
++	struct mt76_usb *usb = &dev->usb;
++	struct usb_host_endpoint *pipe;
++	uint16_t xfer_len = 0;
++	int ret;
++
++	if (actual_len)
++		pipe = usb_rcvbulkpipe(udev, usb->in_ep[ep]);
++	else
++		pipe = usb_sndbulkpipe(udev, usb->out_ep[ep]);
++
++	ret = usb_bulk_msg(udev, pipe, data, len,
++	    actual_len ? &xfer_len : NULL, timeout);
++	if (actual_len)
++		*actual_len = xfer_len;
++
++	return ret;
+ #else
+ 	struct usb_interface *uintf = to_usb_interface(dev->dev);
+ 	struct usb_device *udev = interface_to_usbdev(uintf);
+@@ -1567,7 +1589,12 @@
+ {
+ 	struct page *page = virt_to_head_page(buf);
+ 
++#if defined(__FreeBSD__)
++	(void)allow_direct;
++	__free_page(page);
++#else
+ 	page_pool_put_full_page(page->pp, page, allow_direct);
++#endif
+ }
+ 
+ static inline void *
+@@ -1575,7 +1602,15 @@
+ {
+ 	struct page *page;
+ 
++#if defined(__FreeBSD__)
++	(void)q;
++	if (size > PAGE_SIZE)
++		return NULL;
++	*offset = 0;
++	page = alloc_page(GFP_ATOMIC);
++#else
+ 	page = page_pool_dev_alloc_frag(q->page_pool, offset, size);
++#endif
+ 	if (!page)
+ 		return NULL;
+ 
+--- a/sys/contrib/dev/mediatek/mt76/mac80211.c
++++ b/sys/contrib/dev/mediatek/mt76/mac80211.c
+@@ -312,19 +312,33 @@
+ 	struct ieee80211_supported_band *sband = &msband->sband;
+ 	struct ieee80211_sta_vht_cap *vht_cap;
+ 	struct ieee80211_sta_ht_cap *ht_cap;
++#if !defined(__FreeBSD__)
+ 	struct mt76_dev *dev = phy->dev;
++#endif
+ 	void *chanlist;
+ 	int size;
+ 
+ 	size = n_chan * sizeof(*chan);
++#if defined(__FreeBSD__)
++	chanlist = kmemdup(chan, size, GFP_KERNEL);
++#else
+ 	chanlist = devm_kmemdup(dev->dev, chan, size, GFP_KERNEL);
++#endif
+ 	if (!chanlist)
+ 		return -ENOMEM;
+ 
++#if defined(__FreeBSD__)
++	msband->chan = kcalloc(n_chan, sizeof(*msband->chan), GFP_KERNEL);
++#else
+ 	msband->chan = devm_kcalloc(dev->dev, n_chan, sizeof(*msband->chan),
+ 				    GFP_KERNEL);
+-	if (!msband->chan)
++#endif
++	if (!msband->chan) {
++#if defined(__FreeBSD__)
++		kfree(chanlist);
++#endif
+ 		return -ENOMEM;
++	}
+ 
+ 	sband->channels = chanlist;
+ 	sband->n_channels = n_chan;
+@@ -445,9 +459,17 @@
+ 	wiphy->available_antennas_rx = phy->antenna_mask;
+ 
+ 	wiphy->sar_capa = &mt76_sar_capa;
++#if defined(__FreeBSD__)
++	/* FreeBSD mt7921u currently uses a synthetic LinuxKPI USB device anchor;
++	 * avoid devres-backed allocations on that path.
++	 */
++	phy->frp = kcalloc(wiphy->sar_capa->num_freq_ranges,
++			    sizeof(struct mt76_freq_range_power), GFP_KERNEL);
++#else
+ 	phy->frp = devm_kcalloc(dev->dev, wiphy->sar_capa->num_freq_ranges,
+ 				sizeof(struct mt76_freq_range_power),
+ 				GFP_KERNEL);
++#endif
+ 	if (!phy->frp)
+ 		return -ENOMEM;
+ 
+@@ -778,6 +800,17 @@
+ }
+ EXPORT_SYMBOL_GPL(mt76_unregister_device);
+ 
++#if defined(__FreeBSD__)
++static void mt76_free_sband_allocs(struct mt76_sband *msband)
++{
++	kfree(msband->sband.channels);
++	msband->sband.channels = NULL;
++	msband->sband.n_channels = 0;
++	kfree(msband->chan);
++	msband->chan = NULL;
++}
++#endif
++
+ void mt76_free_device(struct mt76_dev *dev)
+ {
+ 	mt76_worker_teardown(&dev->tx_worker);
+@@ -785,6 +818,13 @@
+ 		destroy_workqueue(dev->wq);
+ 		dev->wq = NULL;
+ 	}
++#if defined(__FreeBSD__)
++	mt76_free_sband_allocs(&dev->phy.sband_2g);
++	mt76_free_sband_allocs(&dev->phy.sband_5g);
++	mt76_free_sband_allocs(&dev->phy.sband_6g);
++	kfree(dev->phy.frp);
++	dev->phy.frp = NULL;
++#endif
+ 	ieee80211_free_hw(dev->hw);
+ }
+ EXPORT_SYMBOL_GPL(mt76_free_device);
+@@ -1590,8 +1630,13 @@
+ static void
+ __mt76_csa_finish(void *priv, u8 *mac, struct ieee80211_vif *vif)
+ {
++#if defined(__FreeBSD__)
++	if (vif->bss_conf.csa_active && ieee80211_beacon_cntdwn_is_complete(vif, 0))
++		ieee80211_csa_finish(vif, 0);
++#else
+ 	if (vif->bss_conf.csa_active && ieee80211_beacon_cntdwn_is_complete(vif))
+ 		ieee80211_csa_finish(vif);
++#endif
+ }
+ 
+ void mt76_csa_finish(struct mt76_dev *dev)
+@@ -1615,7 +1660,11 @@
+ 	if (!vif->bss_conf.csa_active)
+ 		return;
+ 
++#if defined(__FreeBSD__)
++	dev->csa_complete |= ieee80211_beacon_cntdwn_is_complete(vif, 0);
++#else
+ 	dev->csa_complete |= ieee80211_beacon_cntdwn_is_complete(vif);
++#endif
+ }
+ 
+ void mt76_csa_check(struct mt76_dev *dev)
+--- a/sys/contrib/dev/mediatek/mt76/usb.c
++++ b/sys/contrib/dev/mediatek/mt76/usb.c
+@@ -3,6 +3,33 @@
+  * Copyright (C) 2018 Lorenzo Bianconi <lorenzo.bianconi83@gmail.com>
+  */
+ 
++#if defined(__FreeBSD__)
++#include <sys/stdint.h>
++#include <sys/stddef.h>
++#include <sys/param.h>
++#include <sys/queue.h>
++#include <sys/types.h>
++#include <sys/systm.h>
++#include <sys/kernel.h>
++#include <sys/bus.h>
++#include <sys/module.h>
++#include <sys/lock.h>
++#include <sys/mutex.h>
++#include <sys/condvar.h>
++#include <sys/sysctl.h>
++#include <sys/sx.h>
++#include <sys/unistd.h>
++#include <sys/callout.h>
++#include <sys/malloc.h>
++#include <dev/usb/usb_freebsd.h>
++#include <dev/usb/usb.h>
++#include <dev/usb/usbdi.h>
++#include <dev/usb/usbdi_util.h>
++#define	USB_DEBUG_VAR usb_debug
++#include <dev/usb/usb_core.h>
++#include <dev/usb/usb_process.h>
++#include <dev/usb/usb_device.h>
++#endif
+ #include <linux/module.h>
+ #include "mt76.h"
+ #include "usb_trace.h"
+@@ -15,12 +42,41 @@
+ module_param_named(disable_usb_sg, disable_usb_sg, bool, 0644);
+ MODULE_PARM_DESC(disable_usb_sg, "Disable usb scatter-gather support");
+ 
++#if defined(__FreeBSD__)
++#define	usleep_range(_min, _max)	DELAY(_max)
++#define	usb_poison_urb(_urb)		usb_kill_urb(_urb)
++#define	usb_unpoison_urb(_urb)		do { } while (0)
++#define	usb_endpoint_is_bulk_in(_ep)					\
++	(UE_GET_XFERTYPE((_ep)->bmAttributes) == UE_BULK &&		\
++	 UE_GET_DIR((_ep)->bEndpointAddress) == UE_DIR_IN)
++#define	usb_endpoint_is_bulk_out(_ep)					\
++	(UE_GET_XFERTYPE((_ep)->bmAttributes) == UE_BULK &&		\
++	 UE_GET_DIR((_ep)->bEndpointAddress) == UE_DIR_OUT)
++#define	usb_endpoint_num(_ep)	UE_GET_ADDR((_ep)->bEndpointAddress)
++#define	MT76U_FBSD_BULK_BUFSIZE	(64 * 1024)
++static unsigned int fbsd_usb_tx_log_count;
++#endif
++
++static struct usb_interface *
++mt76u_get_intf(struct mt76_dev *dev)
++{
++#if defined(__FreeBSD__)
++	return dev->usb.intf;
++#else
++	return to_usb_interface(dev->dev);
++#endif
++}
++
+ int __mt76u_vendor_request(struct mt76_dev *dev, u8 req, u8 req_type,
+ 			   u16 val, u16 offset, void *buf, size_t len)
+ {
+-	struct usb_interface *uintf = to_usb_interface(dev->dev);
++	struct usb_interface *uintf = mt76u_get_intf(dev);
+ 	struct usb_device *udev = interface_to_usbdev(uintf);
++#if defined(__FreeBSD__)
++	struct usb_host_endpoint *pipe;
++#else
+ 	unsigned int pipe;
++#endif
+ 	int i, ret;
+ 
+ 	lockdep_assert_held(&dev->usb.usb_ctrl_mtx);
+@@ -282,12 +338,16 @@
+ 
+ static bool mt76u_check_sg(struct mt76_dev *dev)
+ {
+-	struct usb_interface *uintf = to_usb_interface(dev->dev);
++#if defined(__FreeBSD__)
++	return false;
++#else
++	struct usb_interface *uintf = mt76u_get_intf(dev);
+ 	struct usb_device *udev = interface_to_usbdev(uintf);
+ 
+ 	return (!disable_usb_sg && udev->bus->sg_tablesize > 0 &&
+ 		(udev->bus->no_sg_constraint ||
+ 		 udev->speed == USB_SPEED_WIRELESS));
++#endif
+ }
+ 
+ static int
+@@ -296,17 +356,33 @@
+ {
+ 	struct usb_host_interface *intf_desc = intf->cur_altsetting;
+ 	struct usb_endpoint_descriptor *ep_desc;
++	struct usb_host_endpoint *ep;
++#if defined(__FreeBSD__)
++	struct usb_device *udev = interface_to_usbdev(intf);
++	int err;
++#endif
+ 	int i, in_ep = 0, out_ep = 0;
+ 
+ 	for (i = 0; i < intf_desc->desc.bNumEndpoints; i++) {
+-		ep_desc = &intf_desc->endpoint[i].desc;
++		ep = &intf_desc->endpoint[i];
++		ep_desc = &ep->desc;
+ 
+ 		if (usb_endpoint_is_bulk_in(ep_desc) &&
+ 		    in_ep < __MT_EP_IN_MAX) {
++#if defined(__FreeBSD__)
++			err = usb_setup_endpoint(udev, ep, MT76U_FBSD_BULK_BUFSIZE);
++			if (err)
++				return err;
++#endif
+ 			usb->in_ep[in_ep] = usb_endpoint_num(ep_desc);
+ 			in_ep++;
+ 		} else if (usb_endpoint_is_bulk_out(ep_desc) &&
+ 			   out_ep < __MT_EP_OUT_MAX) {
++#if defined(__FreeBSD__)
++			err = usb_setup_endpoint(udev, ep, MT76U_FBSD_BULK_BUFSIZE);
++			if (err)
++				return err;
++#endif
+ 			usb->out_ep[out_ep] = usb_endpoint_num(ep_desc);
+ 			out_ep++;
+ 		}
+@@ -321,6 +397,9 @@
+ mt76u_fill_rx_sg(struct mt76_dev *dev, struct mt76_queue *q, struct urb *urb,
+ 		 int nsgs)
+ {
++#if defined(__FreeBSD__)
++	return -EOPNOTSUPP;
++#else
+ 	int i;
+ 
+ 	for (i = 0; i < nsgs; i++) {
+@@ -348,6 +427,7 @@
+ 	sg_init_marker(urb->sg, urb->num_sgs);
+ 
+ 	return i ? : -ENOMEM;
++#endif
+ }
+ 
+ static int
+@@ -372,8 +452,10 @@
+ {
+ 	unsigned int size = sizeof(struct urb);
+ 
++#if !defined(__FreeBSD__)
+ 	if (dev->usb.sg_en)
+ 		size += sg_max_size * sizeof(struct scatterlist);
++#endif
+ 
+ 	e->urb = kzalloc(size, GFP_KERNEL);
+ 	if (!e->urb)
+@@ -381,8 +463,10 @@
+ 
+ 	usb_init_urb(e->urb);
+ 
++#if !defined(__FreeBSD__)
+ 	if (dev->usb.sg_en && sg_max_size > 0)
+ 		e->urb->sg = (struct scatterlist *)(e->urb + 1);
++#endif
+ 
+ 	return 0;
+ }
+@@ -391,10 +475,16 @@
+ mt76u_rx_urb_alloc(struct mt76_dev *dev, struct mt76_queue *q,
+ 		   struct mt76_queue_entry *e)
+ {
++#if !defined(__FreeBSD__)
+ 	enum mt76_rxq_id qid = q - &dev->q_rx[MT_RXQ_MAIN];
++#endif
+ 	int err, sg_size;
+ 
++#if defined(__FreeBSD__)
++	sg_size = 0;
++#else
+ 	sg_size = qid == MT_RXQ_MAIN ? MT_RX_SG_MAX_SIZE : 0;
++#endif
+ 	err = mt76u_urb_alloc(dev, e, sg_size);
+ 	if (err)
+ 		return err;
+@@ -404,10 +494,12 @@
+ 
+ static void mt76u_urb_free(struct urb *urb)
+ {
++#if !defined(__FreeBSD__)
+ 	int i;
+ 
+ 	for (i = 0; i < urb->num_sgs; i++)
+ 		mt76_put_page_pool_buf(sg_virt(&urb->sg[i]), false);
++#endif
+ 
+ 	if (urb->transfer_buffer)
+ 		mt76_put_page_pool_buf(urb->transfer_buffer, false);
+@@ -420,9 +512,13 @@
+ 		    struct urb *urb, usb_complete_t complete_fn,
+ 		    void *context)
+ {
+-	struct usb_interface *uintf = to_usb_interface(dev->dev);
++	struct usb_interface *uintf = mt76u_get_intf(dev);
+ 	struct usb_device *udev = interface_to_usbdev(uintf);
++#if defined(__FreeBSD__)
++	struct usb_host_endpoint *pipe;
++#else
+ 	unsigned int pipe;
++#endif
+ 
+ 	if (dir == USB_DIR_IN)
+ 		pipe = usb_rcvbulkpipe(udev, dev->usb.in_ep[index]);
+@@ -430,7 +526,11 @@
+ 		pipe = usb_sndbulkpipe(udev, dev->usb.out_ep[index]);
+ 
+ 	urb->dev = udev;
++#if defined(__FreeBSD__)
++	urb->endpoint = pipe;
++#else
+ 	urb->pipe = pipe;
++#endif
+ 	urb->complete = complete_fn;
+ 	urb->context = context;
+ }
+@@ -488,11 +588,11 @@
+ 		if (!skb)
+ 			return NULL;
+ 
+-		skb_put_data(skb, data + head_room, MT_SKB_HEAD_LEN);
+-		data += head_room + MT_SKB_HEAD_LEN;
++		skb_put_data(skb, (u8 *)data + head_room, MT_SKB_HEAD_LEN);
++		data = (u8 *)data + head_room + MT_SKB_HEAD_LEN;
+ 		page = virt_to_head_page(data);
+ 		skb_add_rx_frag(skb, skb_shinfo(skb)->nr_frags,
+-				page, data - page_address(page),
++				page, (u8 *)data - (u8 *)page_address(page),
+ 				len - MT_SKB_HEAD_LEN, buf_size);
+ 
+ 		return skb;
+@@ -513,8 +613,13 @@
+ mt76u_process_rx_entry(struct mt76_dev *dev, struct urb *urb,
+ 		       int buf_size)
+ {
++#if defined(__FreeBSD__)
++	u8 *data = urb->transfer_buffer;
++	int data_len = urb->actual_length;
++#else
+ 	u8 *data = urb->num_sgs ? sg_virt(&urb->sg[0]) : urb->transfer_buffer;
+ 	int data_len = urb->num_sgs ? urb->sg[0].length : urb->actual_length;
++#endif
+ 	int len, nsgs = 1, head_room, drv_flags = dev->drv->drv_flags;
+ 	struct sk_buff *skb;
+ 
+@@ -536,6 +641,7 @@
+ 	if (!skb)
+ 		return 0;
+ 
++#if !defined(__FreeBSD__)
+ 	len -= data_len;
+ 	while (len > 0 && nsgs < urb->num_sgs) {
+ 		data_len = min_t(int, len, urb->sg[nsgs].length);
+@@ -546,6 +652,7 @@
+ 		len -= data_len;
+ 		nsgs++;
+ 	}
++#endif
+ 
+ 	skb_mark_for_recycle(skb);
+ 	dev->drv->rx_skb(dev, MT_RXQ_MAIN, skb, NULL);
+@@ -555,8 +662,8 @@
+ 
+ static void mt76u_complete_rx(struct urb *urb)
+ {
+-	struct mt76_dev *dev = dev_get_drvdata(&urb->dev->dev);
+ 	struct mt76_queue *q = urb->context;
++	struct mt76_dev *dev = q->dev;
+ 	unsigned long flags;
+ 
+ 	trace_rx_urb(dev, urb);
+@@ -668,10 +775,15 @@
+ 	if (err)
+ 		return err;
+ 
++	q->dev = dev;
+ 	spin_lock_init(&q->lock);
++#if defined(__FreeBSD__)
++	q->entry = kcalloc(MT_NUM_RX_ENTRIES, sizeof(*q->entry), GFP_KERNEL);
++#else
+ 	q->entry = devm_kcalloc(dev->dev,
+ 				MT_NUM_RX_ENTRIES, sizeof(*q->entry),
+ 				GFP_KERNEL);
++#endif
+ 	if (!q->entry)
+ 		return -ENOMEM;
+ 
+@@ -679,6 +791,7 @@
+ 	q->buf_size = PAGE_SIZE;
+ 
+ 	for (i = 0; i < q->ndesc; i++) {
++		q->entry[i].dev = dev;
+ 		err = mt76u_rx_urb_alloc(dev, q, &q->entry[i]);
+ 		if (err < 0)
+ 			return err;
+@@ -821,8 +934,8 @@
+ 
+ static void mt76u_complete_tx(struct urb *urb)
+ {
+-	struct mt76_dev *dev = dev_get_drvdata(&urb->dev->dev);
+ 	struct mt76_queue_entry *e = urb->context;
++	struct mt76_dev *dev = e->dev;
+ 
+ 	if (mt76u_urb_error(urb))
+ 		dev_err(dev->dev, "tx urb failed: %d\n", urb->status);
+@@ -837,6 +950,10 @@
+ {
+ 	urb->transfer_buffer_length = skb->len;
+ 
++#if defined(__FreeBSD__)
++	urb->transfer_buffer = skb->data;
++	return 0;
++#else
+ 	if (!dev->usb.sg_en) {
+ 		urb->transfer_buffer = skb->data;
+ 		return 0;
+@@ -848,6 +965,7 @@
+ 		return -ENOMEM;
+ 
+ 	return urb->num_sgs;
++#endif
+ }
+ 
+ static int
+@@ -861,17 +979,32 @@
+ 	u16 idx = q->head;
+ 	int err;
+ 
++#if defined(__FreeBSD__)
++	if (fbsd_usb_tx_log_count++ < 32)
++		dev_err(dev->dev, "mt76u_tx_queue_skb: qid=%d len=%u hw_idx=%u head=%u queued=%u\n",
++			qid, skb->len, q->hw_idx, q->head, q->queued);
++#endif
+ 	if (q->queued == q->ndesc)
+ 		return -ENOSPC;
+ 
+ 	skb->prev = skb->next = NULL;
+ 	err = dev->drv->tx_prepare_skb(dev, NULL, qid, wcid, sta, &tx_info);
+-	if (err < 0)
++	if (err < 0) {
++#if defined(__FreeBSD__)
++		if (fbsd_usb_tx_log_count <= 32)
++			dev_err(dev->dev, "mt76u_tx_queue_skb: prepare failed %d\n", err);
++#endif
+ 		return err;
++	}
+ 
+ 	err = mt76u_tx_setup_buffers(dev, tx_info.skb, q->entry[idx].urb);
+-	if (err < 0)
++	if (err < 0) {
++#if defined(__FreeBSD__)
++		if (fbsd_usb_tx_log_count <= 32)
++			dev_err(dev->dev, "mt76u_tx_queue_skb: setup failed %d\n", err);
++#endif
+ 		return err;
++	}
+ 
+ 	mt76u_fill_bulk_urb(dev, USB_DIR_OUT, q2ep(q->hw_idx),
+ 			    q->entry[idx].urb, mt76u_complete_tx,
+@@ -881,6 +1014,11 @@
+ 	q->entry[idx].skb = tx_info.skb;
+ 	q->entry[idx].wcid = 0xffff;
+ 	q->queued++;
++#if defined(__FreeBSD__)
++	if (fbsd_usb_tx_log_count <= 32)
++		dev_err(dev->dev, "mt76u_tx_queue_skb: queued idx=%u first=%u head=%u queued=%u\n",
++			idx, q->first, q->head, q->queued);
++#endif
+ 
+ 	return idx;
+ }
+@@ -893,6 +1031,13 @@
+ 	while (q->first != q->head) {
+ 		urb = q->entry[q->first].urb;
+ 
++#if defined(__FreeBSD__)
++		if (fbsd_usb_tx_log_count <= 32)
++			dev_err(dev->dev, "mt76u_tx_kick: submit first=%u head=%u ep=0x%x len=%u\n",
++				q->first, q->head,
++				urb->endpoint ? (unsigned int)urb->endpoint->desc.bEndpointAddress : 0,
++				urb->transfer_buffer_length);
++#endif
+ 		trace_submit_urb(dev, urb);
+ 		err = usb_submit_urb(urb, GFP_ATOMIC);
+ 		if (err < 0) {
+@@ -903,6 +1048,10 @@
+ 					err);
+ 			break;
+ 		}
++#if defined(__FreeBSD__)
++		if (fbsd_usb_tx_log_count <= 32)
++			dev_err(dev->dev, "mt76u_tx_kick: submit ok\n");
++#endif
+ 		q->first = (q->first + 1) % q->ndesc;
+ 	}
+ }
+@@ -938,23 +1087,34 @@
+ 			continue;
+ 		}
+ 
++#if defined(__FreeBSD__)
++		q = kzalloc(sizeof(*q), GFP_KERNEL);
++#else
+ 		q = devm_kzalloc(dev->dev, sizeof(*q), GFP_KERNEL);
++#endif
+ 		if (!q)
+ 			return -ENOMEM;
+ 
+ 		spin_lock_init(&q->lock);
++		q->dev = dev;
+ 		q->hw_idx = mt76u_ac_to_hwq(dev, i);
+ 
+ 		dev->phy.q_tx[i] = q;
+ 
++#if defined(__FreeBSD__)
++		q->entry = kcalloc(MT_NUM_TX_ENTRIES, sizeof(*q->entry),
++				   GFP_KERNEL);
++#else
+ 		q->entry = devm_kcalloc(dev->dev,
+ 					MT_NUM_TX_ENTRIES, sizeof(*q->entry),
+ 					GFP_KERNEL);
++#endif
+ 		if (!q->entry)
+ 			return -ENOMEM;
+ 
+ 		q->ndesc = MT_NUM_TX_ENTRIES;
+ 		for (j = 0; j < q->ndesc; j++) {
++			q->entry[j].dev = dev;
+ 			err = mt76u_urb_alloc(dev, &q->entry[j],
+ 					      MT_TX_SG_MAX_SIZE);
+ 			if (err < 0)
+@@ -1073,12 +1233,21 @@
+ 	int err;
+ 
+ 	INIT_WORK(&usb->stat_work, mt76u_tx_status_data);
++	usb->intf = intf;
+ 
++#if defined(__FreeBSD__)
++	usb->data_len = UGETW(udev->ep0.desc.wMaxPacketSize);
++#else
+ 	usb->data_len = usb_maxpacket(udev, usb_sndctrlpipe(udev, 0));
++#endif
+ 	if (usb->data_len < 32)
+ 		usb->data_len = 32;
+ 
++#if defined(__FreeBSD__)
++	usb->data = kmalloc(usb->data_len, GFP_KERNEL);
++#else
+ 	usb->data = devm_kmalloc(dev->dev, usb->data_len, GFP_KERNEL);
++#endif
+ 	if (!usb->data)
+ 		return -ENOMEM;
+ 
+@@ -1086,7 +1255,9 @@
+ 	dev->bus = ops;
+ 	dev->queue_ops = &usb_queue_ops;
+ 
++#if !defined(__FreeBSD__)
+ 	dev_set_drvdata(&udev->dev, dev);
++#endif
+ 
+ 	usb->sg_en = mt76u_check_sg(dev);
+
+--- a/sys/contrib/dev/mediatek/mt76/tx.c
++++ b/sys/contrib/dev/mediatek/mt76/tx.c
+@@ -175,9 +175,11 @@ mt76_tx_status_skb_get(struct mt76_dev *dev, struct mt76_wcid *wcid, int pktid,
+ 
+ 	lockdep_assert_held(&dev->status_lock);
+ 
+-	skb = idr_remove(&wcid->pktid, pktid);
+-	if (skb)
+-		goto out;
++	if (mt76_is_skb_pktid(pktid)) {
++		skb = idr_remove(&wcid->pktid, pktid);
++		if (skb)
++			goto out;
++	}
+ 
+ 	/* look for stale entries in the wcid idr queue */
+ 	idr_for_each_entry(&wcid->pktid, skb, id) {
+--- a/sys/contrib/dev/mediatek/mt76/mt792x_core.c
++++ b/sys/contrib/dev/mediatek/mt76/mt792x_core.c
+@@ -61,6 +61,13 @@
+ 	struct mt76_wcid *wcid = &dev->mt76.global_wcid;
+ 	int qid;
+ 
++#if defined(__FreeBSD__)
++	static unsigned int fbsd_tx_log_count;
++	if (fbsd_tx_log_count++ < 32)
++		pr_err("mt792x_tx: len=%u qmap=%u sta=%d vif=%d flags=0x%x\n",
++		       skb->len, skb_get_queue_mapping(skb), control->sta != NULL,
++		       vif != NULL, info->flags);
++#endif
+ 	if (control->sta) {
+ 		struct mt792x_sta *sta;
+ 
+@@ -76,11 +83,18 @@
+ 	}
+ 
+ 	if (mt76_connac_pm_ref(mphy, &dev->pm)) {
++#if defined(__FreeBSD__)
++		if (fbsd_tx_log_count <= 32)
++			pr_err("mt792x_tx: pm_ref ok\n");
++#endif
+ 		mt76_tx(mphy, control->sta, wcid, skb);
+ 		mt76_connac_pm_unref(mphy, &dev->pm);
+ 		return;
+ 	}
+-
++#if defined(__FreeBSD__)
++	if (fbsd_tx_log_count <= 32)
++		pr_err("mt792x_tx: pm_ref failed, queueing for wake\n");
++#endif
+ 	qid = skb_get_queue_mapping(skb);
+ 	if (qid >= MT_TXQ_PSD) {
+ 		qid = IEEE80211_AC_BE;
+--- a/sys/contrib/dev/mediatek/mt76/mt792x_usb.c
++++ b/sys/contrib/dev/mediatek/mt76/mt792x_usb.c
+@@ -11,6 +11,14 @@
+ #include "mt792x.h"
+ #include "mt76_connac2_mac.h"
+ 
++#if defined(__FreeBSD__)
++#define	usb_get_intfdata(_intf)	usbd_get_intfdata(_intf)
++#define	usleep_range(_min, _max)	DELAY(_max)
++#undef msleep
++#define	msleep(_ms)		DELAY((_ms) * 1000)
++#define	usb_put_dev(_udev)	do { } while (0)
++#endif
++
+ u32 mt792xu_rr(struct mt76_dev *dev, u32 addr)
+ {
+ 	u32 ret;
+--- a/sys/contrib/dev/mediatek/mt76/mt7921/mac.c
++++ b/sys/contrib/dev/mediatek/mt76/mt7921/mac.c
+@@ -815,7 +815,7 @@
+ 		pad += 4;
+ 
+ 	err = mt76_skb_adjust_pad(skb, pad);
+-	if (err)
++	if (err && mt76_is_skb_pktid(pktid))
+ 		/* Release pktid in case of error. */
+ 		idr_remove(&wcid->pktid, pktid);
+ 
+--- a/sys/contrib/dev/mediatek/mt76/mt7921/main.c
++++ b/sys/contrib/dev/mediatek/mt76/mt7921/main.c
+@@ -1312,10 +1312,32 @@
+ 	mt7921_abort_roc(mvif->phy, mvif);
+ }
+ 
++#if defined(__FreeBSD__)
++static void
++mt7921_stop_fbsd(struct ieee80211_hw *hw, bool suspend)
++{
++	(void)suspend;
++	mt7921_stop(hw);
++}
++
++static int
++mt76_get_txpower_fbsd(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
++		      unsigned int link_id, int *dbm)
++{
++	(void)link_id;
++	return mt76_get_txpower(hw, vif, dbm);
++}
++#define	MT7921_STOP_OP		mt7921_stop_fbsd
++#define	MT76_GET_TXPOWER_OP	mt76_get_txpower_fbsd
++#else
++#define	MT7921_STOP_OP		mt7921_stop
++#define	MT76_GET_TXPOWER_OP	mt76_get_txpower
++#endif
++
+ const struct ieee80211_ops mt7921_ops = {
+ 	.tx = mt792x_tx,
+ 	.start = mt7921_start,
+-	.stop = mt7921_stop,
++	.stop = MT7921_STOP_OP,
+ 	.add_interface = mt7921_add_interface,
+ 	.remove_interface = mt792x_remove_interface,
+ 	.config = mt7921_config,
+@@ -1336,7 +1358,7 @@
+ 	.wake_tx_queue = mt76_wake_tx_queue,
+ 	.release_buffered_frames = mt76_release_buffered_frames,
+ 	.channel_switch_beacon = mt7921_channel_switch_beacon,
+-	.get_txpower = mt76_get_txpower,
++	.get_txpower = MT76_GET_TXPOWER_OP,
+ 	.get_stats = mt792x_get_stats,
+ 	.get_et_sset_count = mt792x_get_et_sset_count,
+ 	.get_et_strings = mt792x_get_et_strings,
+--- a/sys/contrib/dev/mediatek/mt76/mt7921/usb.c
++++ b/sys/contrib/dev/mediatek/mt76/mt7921/usb.c
+@@ -7,11 +7,34 @@
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/usb.h>
++#include <linux/string.h>
+ 
+ #include "mt7921.h"
+ #include "mcu.h"
+ #include "../mt76_connac2_mac.h"
+ 
++#if defined(__FreeBSD__)
++#define	mt7921_usb_intf_dev(_intf)	(&linux_root_device)
++#define	usb_get_intfdata(_intf)	usbd_get_intfdata(_intf)
++#define	usb_get_dev(_udev)	(_udev)
++#define	usb_put_dev(_udev)	do { } while (0)
++#define	usb_reset_device(_udev)	(0)
++#define	__skb_put_zero(_skb, _len)	skb_put_zero((_skb), (_len))
++#define	mt7921u_probe_log(_fmt, ...) \
++	pr_err("mt7921u: " _fmt "\n", ##__VA_ARGS__)
++#define	USB_DEVICE_AND_INTERFACE_INFO(_vend, _prod, _ic, _isc, _ip) \
++	.match_flags = USB_DEVICE_ID_MATCH_DEVICE | \
++	    USB_DEVICE_ID_MATCH_INT_CLASS | \
++	    USB_DEVICE_ID_MATCH_INT_SUBCLASS | \
++	    USB_DEVICE_ID_MATCH_INT_PROTOCOL, \
++	.idVendor = (_vend), .idProduct = (_prod), \
++	.bInterfaceClass = (_ic), .bInterfaceSubClass = (_isc), \
++	.bInterfaceProtocol = (_ip)
++#else
++#define	mt7921_usb_intf_dev(_intf)	(&(_intf)->dev)
++#define	mt7921u_probe_log(_fmt, ...)	do { } while (0)
++#endif
++
+ static const struct usb_device_id mt7921u_device_table[] = {
+ 	{ USB_DEVICE_AND_INTERFACE_INFO(0x0e8d, 0x7961, 0xff, 0xff, 0xff),
+ 		.driver_info = (kernel_ulong_t)MT7921_FIRMWARE_WM },
+@@ -143,6 +166,14 @@
+ 	mt7921_stop(hw);
+ }
+ 
++#if defined(__FreeBSD__)
++static void mt7921u_stop_fbsd(struct ieee80211_hw *hw, bool suspend)
++{
++	(void)suspend;
++	mt7921u_stop(hw);
++}
++#endif
++
+ static int mt7921u_probe(struct usb_interface *usb_intf,
+ 			 const struct usb_device_id *id)
+ {
+@@ -184,15 +215,39 @@
+ 	u8 features;
+ 	int ret;
+ 
+-	ops = mt792x_get_mac80211_ops(&usb_intf->dev, &mt7921_ops,
++	mt7921u_probe_log("probe start");
++
++#if defined(__FreeBSD__)
++	/*
++	 * FreeBSD LinuxKPI USB has no struct device embedded in
++	 * struct usb_interface, so this WIP USB port uses linux_root_device as the
++	 * device anchor. Avoid devm_kmemdup() and the early optional firmware
++	 * feature probe here because devres is not set up for that synthetic device
++	 * in the same way as for Linux USB interface devices.
++	 */
++	ops = kmemdup(&mt7921_ops, sizeof(*ops), GFP_KERNEL);
++	if (!ops)
++		return -ENOMEM;
++	features = 0;
++#else
++	ops = mt792x_get_mac80211_ops(mt7921_usb_intf_dev(usb_intf), &mt7921_ops,
+ 				      (void *)id->driver_info, &features);
+ 	if (!ops)
+ 		return -ENOMEM;
++#endif
+ 
++#if defined(__FreeBSD__)
++	ops->stop = mt7921u_stop_fbsd;
++#else
+ 	ops->stop = mt7921u_stop;
+-	mdev = mt76_alloc_device(&usb_intf->dev, sizeof(*dev), ops, &drv_ops);
+-	if (!mdev)
++#endif
++	mdev = mt76_alloc_device(mt7921_usb_intf_dev(usb_intf), sizeof(*dev), ops, &drv_ops);
++	if (!mdev) {
++#if defined(__FreeBSD__)
++		kfree(ops);
++#endif
+ 		return -ENOMEM;
++	}
+ 
+ 	dev = container_of(mdev, struct mt792x_dev, mt76);
+ 	dev->fw_features = features;
+@@ -204,42 +259,62 @@
+ 	usb_set_intfdata(usb_intf, dev);
+ 
+ 	ret = __mt76u_init(mdev, usb_intf, &bus_ops);
+-	if (ret < 0)
++	if (ret < 0) {
++		mt7921u_probe_log("__mt76u_init failed: %d", ret);
+ 		goto error;
++	}
+ 
+ 	mdev->rev = (mt76_rr(dev, MT_HW_CHIPID) << 16) |
+ 		    (mt76_rr(dev, MT_HW_REV) & 0xff);
++	mt7921u_probe_log("ASIC revision: %04x", mdev->rev);
+ 	dev_dbg(mdev->dev, "ASIC revision: %04x\n", mdev->rev);
+ 
+ 	if (mt76_get_field(dev, MT_CONN_ON_MISC, MT_TOP_MISC2_FW_N9_RDY)) {
+ 		ret = mt792xu_wfsys_reset(dev);
+-		if (ret)
++		if (ret) {
++			mt7921u_probe_log("wfsys reset failed: %d", ret);
+ 			goto error;
++		}
+ 	}
+ 
+ 	ret = mt792xu_mcu_power_on(dev);
+-	if (ret)
++	if (ret) {
++		mt7921u_probe_log("mcu power on failed: %d", ret);
+ 		goto error;
++	}
++	mt7921u_probe_log("mcu power on ok");
+ 
+ 	ret = mt76u_alloc_mcu_queue(&dev->mt76);
+-	if (ret)
++	if (ret) {
++		mt7921u_probe_log("alloc mcu queue failed: %d", ret);
+ 		goto error;
++	}
++	mt7921u_probe_log("mcu queue ok");
+ 
+ 	ret = mt76u_alloc_queues(&dev->mt76);
+-	if (ret)
++	if (ret) {
++		mt7921u_probe_log("alloc data queues failed: %d", ret);
+ 		goto error;
++	}
++	mt7921u_probe_log("data queues ok");
+ 
+ 	ret = mt792xu_dma_init(dev, false);
+-	if (ret)
++	if (ret) {
++		mt7921u_probe_log("dma init failed: %d", ret);
+ 		goto error;
++	}
++	mt7921u_probe_log("dma init ok");
+ 
+ 	hw = mt76_hw(dev);
+ 	/* check hw sg support in order to enable AMSDU */
+ 	hw->max_tx_fragments = mdev->usb.sg_en ? MT_HW_TXP_MAX_BUF_NUM : 1;
+ 
+ 	ret = mt7921_register_device(dev);
+-	if (ret)
++	if (ret) {
++		mt7921u_probe_log("register device failed: %d", ret);
+ 		goto error;
++	}
++	mt7921u_probe_log("probe ok");
+ 
+ 	return 0;
+ 
+@@ -339,10 +414,16 @@
+ 	.resume		= mt7921u_resume,
+ 	.reset_resume	= mt7921u_resume,
+ #endif /* CONFIG_PM */
++#if !defined(__FreeBSD__)
+ 	.soft_unbind	= 1,
+ 	.disable_hub_initiated_lpm = 1,
++#endif
+ };
++#if defined(__FreeBSD__)
++USB_DRIVER_EXPORT(mt7921u, &mt7921u_driver);
++#else
+ module_usb_driver(mt7921u_driver);
++#endif
+ 
+ MODULE_AUTHOR("Lorenzo Bianconi <lorenzo@kernel.org>");
+ MODULE_LICENSE("Dual BSD/GPL");
+--- a/sys/modules/mt76/core/Makefile
++++ b/sys/modules/mt76/core/Makefile
+@@ -9,6 +9,7 @@
+ SRCS+=	pci.c
+ .if defined(WITH_USB) && ${WITH_USB} > 0
+ SRCS+=	usb.c	# usb_trace.c
++CFLAGS+=	-DCONFIG_USB=${WITH_USB}
+ .endif
+ #SRCS+=	sdio.c sdio_txrx.c
+ 
+--- a/sys/modules/mt76/mt7921/Makefile
++++ b/sys/modules/mt76/mt7921/Makefile
+@@ -13,6 +13,10 @@
+ 
+ # USB stuff.
+ #SRCS+=	usb.c
++.if defined(WITH_USB) && ${WITH_USB} > 0
++SRCS+=	usb.c
++CFLAGS+=	-DCONFIG_USB=${WITH_USB}
++.endif
+ 
+ # SDIO stuff.
+ #SRCS+=	sdio.c sdio_mac.c sdio_mcu.c

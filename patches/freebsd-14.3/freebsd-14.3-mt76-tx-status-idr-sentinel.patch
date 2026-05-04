@@ -1,0 +1,17 @@
+--- sys/contrib/dev/mediatek/mt76/tx.c
++++ sys/contrib/dev/mediatek/mt76/tx.c
+@@ -175,9 +175,11 @@ mt76_tx_status_skb_get(struct mt76_dev *dev, struct mt76_wcid *wcid, int pktid,
+ 
+ 	lockdep_assert_held(&dev->status_lock);
+ 
+-	skb = idr_remove(&wcid->pktid, pktid);
+-	if (skb)
+-		goto out;
++	if (mt76_is_skb_pktid(pktid)) {
++		skb = idr_remove(&wcid->pktid, pktid);
++		if (skb)
++			goto out;
++	}
+ 
+ 	/* look for stale entries in the wcid idr queue */
+ 	idr_for_each_entry(&wcid->pktid, skb, id) {
