@@ -35,8 +35,11 @@ Mark the first GitHub release as a pre-release.
    - LinuxKPI USB interface fixes.
    - LinuxKPI skb/headroom helpers.
    - mt76 FreeBSD compatibility fixes.
+   - mt76 USB reset/detach hardening.
+   - mt76 FreeBSD wlan parent naming cleanup.
    - MT7921U USB module enablement.
    - active monitor and RX mbuf guard work.
+   - AU lib80211 regdomain userland patch.
 
 ## Publish
 
@@ -65,9 +68,9 @@ Body:
 Initial WIP release for native FreeBSD support of ALFA AWUS036AXML / MediaTek
 MT7921U USB Wi-Fi.
 
-Includes FreeBSD 14.3 WIP patches, build/capture scripts, and testing notes for
-USB attach, firmware load, station mode, WPA2 association, basic traffic,
-monitor mode, and short Kismet radiotap capture.
+Includes FreeBSD 14.3 WIP patches, build/capture scripts, AU regdomain helper
+tooling, and testing notes for USB attach, firmware load, station mode, WPA2
+association, basic traffic, monitor mode, and short Kismet radiotap capture.
 
 This is a pre-release. Full device support is not complete. Remaining work
 includes sustained traffic, reboot/replug soak testing, clean detach,

@@ -86,10 +86,10 @@
 +	return (pskb_expand_head(skb, headroom - have, 0, GFP_ATOMIC));
  }
  
-#define	SKB_WITH_OVERHEAD(_s)						\
+ #define	SKB_WITH_OVERHEAD(_s)						\
 --- a/sys/compat/linuxkpi/common/src/linux_80211_macops.c
 +++ b/sys/compat/linuxkpi/common/src/linux_80211_macops.c
-@@ -644,12 +644,22 @@ lkpi_80211_mo_wake_tx_queue(struct ieee80211_hw *hw, struct ieee80211_txq *txq)
+@@ -644,13 +644,21 @@ lkpi_80211_mo_wake_tx_queue(struct ieee80211_hw *hw, struct ieee80211_txq *txq)
  {
  	struct lkpi_hw *lhw;
  

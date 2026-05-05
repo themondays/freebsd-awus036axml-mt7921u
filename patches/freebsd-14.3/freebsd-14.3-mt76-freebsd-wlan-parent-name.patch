@@ -1,0 +1,57 @@
+--- sys/contrib/dev/mediatek/mt76/mt76.h
++++ sys/contrib/dev/mediatek/mt76/mt76.h
+@@ -798,6 +798,9 @@ struct mt76_dev {
+ 	struct device *dev;
+ 	struct device *dma_dev;
++#if defined(__FreeBSD__)
++	char fbsd_wlan_name[16];
++#endif
+ 
+	struct mt76_mcu mcu;
+
+	struct net_device napi_dev;
+--- sys/contrib/dev/mediatek/mt76/mac80211.c
++++ sys/contrib/dev/mediatek/mt76/mac80211.c
+@@ -435,6 +435,32 @@ mt76_check_sband(struct mt76_phy *phy, struct mt76_sband *msband,
+ 	phy->hw->wiphy->bands[band] = NULL;
+ }
+ 
++#if defined(__FreeBSD__)
++static unsigned int mt76_fbsd_usb_wlan_unit;
++
++static char *
++mt76_fbsd_wlan_name(struct mt76_dev *dev)
++{
++	char *name = dev_name(dev->dev);
++	unsigned int unit;
++
++	if (!mt76_is_usb(dev) || strcmp(name, "device") != 0)
++		return name;
++
++	if (dev->fbsd_wlan_name[0] == '\0') {
++		unit = mt76_fbsd_usb_wlan_unit++;
++		if ((dev->rev >> 16) == 0x7961)
++			snprintf(dev->fbsd_wlan_name,
++				 sizeof(dev->fbsd_wlan_name), "mt7921u%u", unit);
++		else
++			snprintf(dev->fbsd_wlan_name,
++				 sizeof(dev->fbsd_wlan_name), "mt76u%u", unit);
++	}
++
++	return dev->fbsd_wlan_name;
++}
++#endif
++
+ static int
+ mt76_phy_init(struct mt76_phy *phy, struct ieee80211_hw *hw)
+ {
+@@ -443,6 +468,9 @@ mt76_phy_init(struct mt76_phy *phy, struct ieee80211_hw *hw)
+ 	struct wiphy *wiphy = hw->wiphy;
+ 
+ 	SET_IEEE80211_DEV(hw, dev->dev);
++#if defined(__FreeBSD__)
++	linuxkpi_set_ieee80211_dev(hw, mt76_fbsd_wlan_name(dev));
++#endif
+ 	SET_IEEE80211_PERM_ADDR(hw, phy->macaddr);
+ 
+ 	wiphy->features |= NL80211_FEATURE_ACTIVE_MONITOR |

@@ -8,13 +8,30 @@ fi
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 root_dir="$(dirname -- "$script_dir")"
-patch_file="$root_dir/patches/freebsd-14.3/freebsd-14.3-mt76-mt7921u-wip.patch"
 src="${SRC:-/usr/src}"
+patch_dir="$root_dir/patches/freebsd-14.3"
+patches="
+freebsd-14.3-mt76-mt7921u-wip.patch
+freebsd-14.3-mt76-usb-reset-hardening.patch
+freebsd-14.3-mt76-freebsd-wlan-parent-name.patch
+freebsd-14.3-mt76-drop-usb-tx-debug.patch
+freebsd-14.3-linuxkpi-active-monitor-wip.patch
+freebsd-14.3-linuxkpi-rx-mbuf-length-guard-wip.patch
+"
+# freebsd-14.3-mt76-tx-status-idr-sentinel.patch is kept for patch-split
+# review, but the current monolithic WIP patch already includes it.
 
-if [ ! -r "$patch_file" ]; then
-	echo "Missing patch: $patch_file" >&2
-	exit 1
-fi
+patch_strip()
+{
+	case "$1" in
+		freebsd-14.3-mt76-mt7921u-wip.patch)
+			echo 1
+			;;
+		*)
+			echo 0
+			;;
+	esac
+}
 
 case "${1:-}" in
 	--yes)
@@ -35,14 +52,23 @@ fi
 
 pkg install -y wifi-firmware-mt76-kmod-mt7921
 
-if patch -d "$src" -p0 --dry-run < "$patch_file" >/tmp/mt7921u-patch-check.log 2>&1; then
-	patch -d "$src" -p0 < "$patch_file"
-elif patch -d "$src" -p0 -R --dry-run < "$patch_file" >/tmp/mt7921u-patch-check.log 2>&1; then
-	echo "Patch already appears to be applied."
-else
-	cat /tmp/mt7921u-patch-check.log >&2
-	exit 1
-fi
+for patch_name in $patches; do
+	patch_file="$patch_dir/$patch_name"
+	strip="$(patch_strip "$patch_name")"
+	if [ ! -r "$patch_file" ]; then
+		echo "Missing patch: $patch_file" >&2
+		exit 1
+	fi
+	if patch -d "$src" -p"$strip" --dry-run < "$patch_file" >/tmp/mt7921u-patch-check.log 2>&1; then
+		echo "Applying $patch_name"
+		patch -d "$src" -p"$strip" < "$patch_file"
+	elif patch -d "$src" -p"$strip" -R --dry-run < "$patch_file" >/tmp/mt7921u-patch-check.log 2>&1; then
+		echo "Patch already appears to be applied: $patch_name"
+	else
+		cat /tmp/mt7921u-patch-check.log >&2
+		exit 1
+	fi
+done
 
 make -C "$src/sys/modules/mt76/core" WITH_USB=1 clean all install
 make -C "$src/sys/modules/mt76/mt7921" WITH_USB=1 clean all install

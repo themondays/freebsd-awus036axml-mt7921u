@@ -19,6 +19,7 @@ Validated so far on a FreeBSD 14.3 test machine:
 - Basic gateway traffic.
 - Concurrent station plus monitor VAP on the associated channel.
 - Short Kismet radiotap capture after RX mbuf length guard.
+- Native AU regdomain userland patch for the tested monitor channel set.
 
 Not complete yet:
 
@@ -38,12 +39,18 @@ Not complete yet:
 patches/freebsd-14.3/
   freebsd-14.3-mt76-mt7921u-wip.patch
   freebsd-14.3-mt76-tx-status-idr-sentinel.patch
+  freebsd-14.3-mt76-usb-reset-hardening.patch
+  freebsd-14.3-mt76-freebsd-wlan-parent-name.patch
+  freebsd-14.3-mt76-drop-usb-tx-debug.patch
   freebsd-14.3-linuxkpi-active-monitor-wip.patch
   freebsd-14.3-linuxkpi-rx-mbuf-length-guard-wip.patch
+  freebsd-14.3-lib80211-au-regdomain-wip.patch
 
 scripts/
   build-mt7921u-freebsd14.sh
   capture-awus036axml.sh
+  apply-au-regdomain-freebsd14.sh
+  configure-awus-monitor-regdomain.sh
 
 docs/
   TESTING.md
@@ -89,7 +96,20 @@ dmesg | tail -80
 ```
 
 Expected early success is a new wlan parent device in `net.wlan.devices` in
-addition to any internal Wi-Fi device.
+addition to any internal Wi-Fi device. On the AWUS036AXML path it should be
+named `mt7921u0`, not the generic LinuxKPI root name `device`.
+
+For AU monitor testing and Kismet channel hopping, install the userland
+regdomain patch separately:
+
+```sh
+sudo ./scripts/apply-au-regdomain-freebsd14.sh --yes
+sudo ./scripts/configure-awus-monitor-regdomain.sh --yes \
+  --iface wlan2 --country AU --channel 157
+```
+
+The validated AU monitor channel set is 1-13, 36-64, 100-116, 132-140, and
+149-165. The patch intentionally keeps 120/124/128 and 144 unavailable.
 
 ## Publication Scope
 
