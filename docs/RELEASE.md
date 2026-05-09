@@ -12,13 +12,16 @@ Recommended description:
 WIP native FreeBSD MT7921U / AWUS036AXML Wi-Fi driver patches and test tooling
 ```
 
-Recommended first tag:
+Recommended GitHub release tag:
 
 ```text
 v0.1.0-wip
 ```
 
 Mark the first GitHub release as a pre-release.
+GitHub releases are tied to one Git tag. Do not add multiple version tags to
+one release. If `v0.1.0-wip` is already published, do not move it; create a new
+pre-release tag such as `v0.1.1-wip` for the next snapshot.
 
 ## Before Publishing
 
@@ -98,6 +101,14 @@ git remote add origin git@github.com:themondays/freebsd-awus036axml-mt7921u.git
 git push -u origin main
 git tag -a v0.1.0-wip -m "v0.1.0-wip"
 git push origin v0.1.0-wip
+```
+
+For later snapshots after `v0.1.0-wip` exists:
+
+```sh
+git push origin main
+git tag -a v0.1.1-wip -m "v0.1.1-wip"
+git push origin v0.1.1-wip
 ```
 
 ## Release Notes

@@ -208,11 +208,15 @@ station VAPs on the mt7921u parent.
 Use this repository for public review, repeatable testing, and upstream patch
 preparation. Do not describe the current state as full AWUS036AXML support.
 
-Recommended first tag:
+Recommended GitHub release tag:
 
 ```text
 v0.1.0-wip
 ```
+
+GitHub releases use one Git tag per release. If `v0.1.0-wip` is already
+published, keep it immutable and create the next WIP tag, for example
+`v0.1.1-wip`, for follow-up release snapshots.
 
 ## License
 
