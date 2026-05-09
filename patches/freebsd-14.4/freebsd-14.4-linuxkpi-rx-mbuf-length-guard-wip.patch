@@ -1,0 +1,109 @@
+diff --git sys/compat/linuxkpi/common/src/linux_80211.c sys/compat/linuxkpi/common/src/linux_80211.c
+index 67722f5..694a955 100644
+--- sys/compat/linuxkpi/common/src/linux_80211.c
++++ sys/compat/linuxkpi/common/src/linux_80211.c
+@@ -6875,7 +6875,7 @@ lkpi_80211_lhw_rxq_rx_one(struct lkpi_hw *lhw, struct mbuf *m)
+ #ifdef LKPI_80211_USE_MTAG
+ 	struct m_tag *mtag;
+ #endif
+-	int ok;
++	int ok, pktlen;
+ 
+ 	ni = NULL;
+ #ifdef LKPI_80211_USE_MTAG
+@@ -6893,6 +6893,22 @@ lkpi_80211_lhw_rxq_rx_one(struct lkpi_hw *lhw, struct mbuf *m)
+ 	}
+ #endif
+ 
++	/*
++	 * The all-VAP RX path clones frames with m_dup().  m_dup() assumes
++	 * m_pkthdr.len matches the actual mbuf chain length and can fault if a
++	 * LinuxKPI RX skb produced a truncated mbuf.  Drop malformed frames
++	 * before net80211 fanout rather than letting monitor/promisc traffic
++	 * panic the kernel.
++	 */
++	pktlen = m_length(m, NULL);
++	if (__predict_false(pktlen != m->m_pkthdr.len)) {
++		if (ni != NULL)
++			ieee80211_free_node(ni);
++		counter_u64_add(lhw->ic->ic_ierrors, 1);
++		m_freem(m);
++		return;
++	}
++
+ 	if (ni != NULL) {
+ 		ok = ieee80211_input_mimo(ni, m);
+ 		ieee80211_free_node(ni);		/* Release the reference. */
+@@ -7148,7 +7164,7 @@ linuxkpi_ieee80211_rx(struct ieee80211_hw *hw, struct sk_buff *skb,
+ 	struct ieee80211vap *vap;
+ 	struct ieee80211_hdr *hdr;
+ 	struct lkpi_sta *lsta;
+-	int i, offset, ok, error;
++	int i, mlen, offset, ok, error, skb_headlen_rx;
+ 	uint8_t rssi;
+ 	bool is_beacon;
+ 
+@@ -7162,6 +7178,17 @@ linuxkpi_ieee80211_rx(struct ieee80211_hw *hw, struct sk_buff *skb,
+ 		goto err;
+ 	}
+ 
++	if (__predict_false(skb->data_len > skb->len ||
++	    skb->data > skb->tail || skb->tail > skb->end)) {
++		counter_u64_add(ic->ic_ierrors, 1);
++		goto err;
++	}
++	skb_headlen_rx = skb->tail - skb->data;
++	if (__predict_false((uint32_t)skb_headlen_rx != skb_headlen(skb))) {
++		counter_u64_add(ic->ic_ierrors, 1);
++		goto err;
++	}
++
+ 	/*
+ 	 * For now do the data copy; we can later improve things. Might even
+ 	 * have an mbuf backing the skb data then?
+@@ -7171,16 +7198,27 @@ linuxkpi_ieee80211_rx(struct ieee80211_hw *hw, struct sk_buff *skb,
+ 		counter_u64_add(ic->ic_ierrors, 1);
+ 		goto err;
+ 	}
+-	m_copyback(m, 0, skb->tail - skb->data, skb->data);
++	m_copyback(m, 0, skb_headlen_rx, skb->data);
+ 
+ 	shinfo = skb_shinfo(skb);
+-	offset = m->m_len;
++	offset = skb_headlen_rx;
+ 	for (i = 0; i < shinfo->nr_frags; i++) {
+ 		m_copyback(m, offset, shinfo->frags[i].size,
+ 		    (uint8_t *)linux_page_address(shinfo->frags[i].page) +
+ 		    shinfo->frags[i].offset);
+ 		offset += shinfo->frags[i].size;
+ 	}
++	if (__predict_false(offset != skb->len)) {
++		m_freem(m);
++		counter_u64_add(ic->ic_ierrors, 1);
++		goto err;
++	}
++	mlen = m_length(m, NULL);
++	if (__predict_false(mlen != offset || m->m_pkthdr.len != offset)) {
++		m_freem(m);
++		counter_u64_add(ic->ic_ierrors, 1);
++		goto err;
++	}
+ 
+ 	rx_status = IEEE80211_SKB_RXCB(skb);
+ 
+@@ -7323,8 +7361,14 @@ linuxkpi_ieee80211_rx(struct ieee80211_hw *hw, struct sk_buff *skb,
+ 		rtap->wr_dbm_antnoise = rx_stats.c_nf;
+ 	}
+ 
+-	if (ieee80211_hw_check(hw, RX_INCLUDES_FCS))
++	if (ieee80211_hw_check(hw, RX_INCLUDES_FCS)) {
++		if (__predict_false(m->m_pkthdr.len < IEEE80211_CRC_LEN)) {
++			m_freem(m);
++			counter_u64_add(ic->ic_ierrors, 1);
++			goto err;
++		}
+ 		m_adj(m, -IEEE80211_CRC_LEN);
++	}
+ 
+ #if 0
+ 	if (list != NULL) {

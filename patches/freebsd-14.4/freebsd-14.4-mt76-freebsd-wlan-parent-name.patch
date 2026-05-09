@@ -1,0 +1,120 @@
+diff --git sys/compat/linuxkpi/common/include/net/mac80211.h sys/compat/linuxkpi/common/include/net/mac80211.h
+index f143873..beea91b 100644
+--- sys/compat/linuxkpi/common/include/net/mac80211.h
++++ sys/compat/linuxkpi/common/include/net/mac80211.h
+@@ -1115,7 +1115,7 @@ extern const struct cfg80211_ops linuxkpi_mac80211cfgops;
+ struct ieee80211_hw *linuxkpi_ieee80211_alloc_hw(size_t,
+     const struct ieee80211_ops *);
+ void linuxkpi_ieee80211_iffree(struct ieee80211_hw *);
+-void linuxkpi_set_ieee80211_dev(struct ieee80211_hw *);
++void linuxkpi_set_ieee80211_dev(struct ieee80211_hw *, const char *);
+ int linuxkpi_ieee80211_ifattach(struct ieee80211_hw *);
+ void linuxkpi_ieee80211_ifdetach(struct ieee80211_hw *);
+ void linuxkpi_ieee80211_unregister_hw(struct ieee80211_hw *);
+@@ -1235,7 +1235,7 @@ SET_IEEE80211_DEV(struct ieee80211_hw *hw, struct device *dev)
+ {
+ 
+ 	set_wiphy_dev(hw->wiphy, dev);
+-	linuxkpi_set_ieee80211_dev(hw);
++	linuxkpi_set_ieee80211_dev(hw, NULL);
+ 
+ 	IMPROVE();
+ }
+diff --git sys/compat/linuxkpi/common/src/linux_80211.c sys/compat/linuxkpi/common/src/linux_80211.c
+index cd7898a..9713bd2 100644
+--- sys/compat/linuxkpi/common/src/linux_80211.c
++++ sys/compat/linuxkpi/common/src/linux_80211.c
+@@ -6192,7 +6192,7 @@ linuxkpi_ieee80211_iffree(struct ieee80211_hw *hw)
+ }
+ 
+ void
+-linuxkpi_set_ieee80211_dev(struct ieee80211_hw *hw)
++linuxkpi_set_ieee80211_dev(struct ieee80211_hw *hw, const char *name)
+ {
+ 	struct lkpi_hw *lhw;
+ 	struct ieee80211com *ic;
+@@ -6208,13 +6208,17 @@ linuxkpi_set_ieee80211_dev(struct ieee80211_hw *hw)
+ 	 * Set a proper name before ieee80211_ifattach() if dev is set.
+ 	 * ath1xk also unset the dev so we need to check.
+ 	 */
+-	dev = wiphy_dev(hw->wiphy);
+-	if (dev != NULL) {
+-		ic->ic_name = dev_name(dev);
++	if (name != NULL) {
++		ic->ic_name = name;
+ 	} else {
+-		TODO("adjust arguments to still have the old dev or go through "
+-		    "the hoops of getting the bsddev from hw and detach; "
+-		    "or do in XXX; check ath1kx drivers");
++		dev = wiphy_dev(hw->wiphy);
++		if (dev != NULL) {
++			ic->ic_name = dev_name(dev);
++		} else {
++			TODO("adjust arguments to still have the old dev or go through "
++			    "the hoops of getting the bsddev from hw and detach; "
++			    "or do in XXX; check ath1kx drivers");
++		}
+ 	}
+ 
+ 	/* XXX-BZ do we also need to set wiphy name? */
+diff --git sys/contrib/dev/mediatek/mt76/mac80211.c sys/contrib/dev/mediatek/mt76/mac80211.c
+index b96ffcc..103452a 100644
+--- sys/contrib/dev/mediatek/mt76/mac80211.c
++++ sys/contrib/dev/mediatek/mt76/mac80211.c
+@@ -436,6 +436,32 @@ mt76_check_sband(struct mt76_phy *phy, struct mt76_sband *msband,
+ 	phy->hw->wiphy->bands[band] = NULL;
+ }
+ 
++#if defined(__FreeBSD__)
++static unsigned int mt76_fbsd_usb_wlan_unit;
++
++static char *
++mt76_fbsd_wlan_name(struct mt76_dev *dev)
++{
++	char *name = dev_name(dev->dev);
++	unsigned int unit;
++
++	if (!mt76_is_usb(dev) || strcmp(name, "device") != 0)
++		return name;
++
++	if (dev->fbsd_wlan_name[0] == '\0') {
++		unit = mt76_fbsd_usb_wlan_unit++;
++		if ((dev->rev >> 16) == 0x7961)
++			snprintf(dev->fbsd_wlan_name,
++				 sizeof(dev->fbsd_wlan_name), "mt7921u%u", unit);
++		else
++			snprintf(dev->fbsd_wlan_name,
++				 sizeof(dev->fbsd_wlan_name), "mt76u%u", unit);
++	}
++
++	return dev->fbsd_wlan_name;
++}
++#endif
++
+ static int
+ mt76_phy_init(struct mt76_phy *phy, struct ieee80211_hw *hw)
+ {
+@@ -443,6 +469,9 @@ mt76_phy_init(struct mt76_phy *phy, struct ieee80211_hw *hw)
+ 	struct wiphy *wiphy = hw->wiphy;
+ 
+ 	SET_IEEE80211_DEV(hw, dev->dev);
++#if defined(__FreeBSD__)
++	linuxkpi_set_ieee80211_dev(hw, mt76_fbsd_wlan_name(dev));
++#endif
+ 	SET_IEEE80211_PERM_ADDR(hw, phy->macaddr);
+ 
+ 	wiphy->features |= NL80211_FEATURE_ACTIVE_MONITOR |
+diff --git sys/contrib/dev/mediatek/mt76/mt76.h sys/contrib/dev/mediatek/mt76/mt76.h
+index 89d53f4..e87944f 100644
+--- sys/contrib/dev/mediatek/mt76/mt76.h
++++ sys/contrib/dev/mediatek/mt76/mt76.h
+@@ -797,6 +797,9 @@ struct mt76_dev {
+ 	const struct mt76_mcu_ops *mcu_ops;
+ 	struct device *dev;
+ 	struct device *dma_dev;
++#if defined(__FreeBSD__)
++	char fbsd_wlan_name[16];
++#endif
+ 
+ 	struct mt76_mcu mcu;
+ 

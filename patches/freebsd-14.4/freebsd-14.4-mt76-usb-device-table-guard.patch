@@ -1,0 +1,15 @@
+diff --git sys/contrib/dev/mediatek/mt76/mt7921/usb.c sys/contrib/dev/mediatek/mt76/mt7921/usb.c
+--- sys/contrib/dev/mediatek/mt76/mt7921/usb.c
++++ sys/contrib/dev/mediatek/mt76/mt7921/usb.c
+@@ -400,7 +400,11 @@ failed:
+ }
+ #endif /* CONFIG_PM */
+ 
++#if !defined(__FreeBSD__)
+ MODULE_DEVICE_TABLE(usb, mt7921u_device_table);
++#else
++/* FreeBSD LinuxKPI does not provide MODULE_DEVICE_TABLE_BUS_usb. */
++#endif
+ MODULE_FIRMWARE(MT7921_FIRMWARE_WM);
+ MODULE_FIRMWARE(MT7921_ROM_PATCH);
+ 

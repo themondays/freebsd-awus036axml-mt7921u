@@ -1,0 +1,24 @@
+--- sys/compat/linuxkpi/common/src/linux_80211.c
++++ sys/compat/linuxkpi/common/src/linux_80211.c
+@@ -6996,7 +6996,20 @@
+ 		if (ok < 0)
+ 			m_freem(m);
+ 	} else {
+-		ok = ieee80211_input_mimo_all(lhw->ic, m);
++		if (lkpi_lhw_has_running_monitor_vif(lhw)) {
++			/*
++			 * LinuxKPI monitor capture can receive frames with no
++			 * net80211 node.  Feeding those through all-VAP fanout
++			 * makes net80211 clone the packet with m_dup(), which
++			 * can still trip over shortened RX chains under Kismet.
++			 * Monitor consumers only need the radiotap tap here, so
++			 * bypass net80211 all-VAP fanout for this path.
++			 */
++			ieee80211_radiotap_rx_all(lhw->ic, m);
++			m_freem(m);
++			ok = -1;
++		} else
++			ok = ieee80211_input_mimo_all(lhw->ic, m);
+ 		/* mbuf got consumed. */
+ 	}
+ 

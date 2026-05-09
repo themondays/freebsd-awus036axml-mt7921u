@@ -1,0 +1,17 @@
+diff --git sys/compat/linuxkpi/common/src/linux_80211.c sys/compat/linuxkpi/common/src/linux_80211.c
+--- sys/compat/linuxkpi/common/src/linux_80211.c
++++ sys/compat/linuxkpi/common/src/linux_80211.c
+@@ -7885,7 +7885,13 @@ linuxkpi_ieee80211_tx_status_ext(struct ieee80211_hw *hw,
+ 		ni = NULL;
+ 	}
+ 
+ 	info = txstat->info;
++	/*
++	 * Some imported drivers, including mt76 USB completion, leave
++	 * txstat->info unset and expect mac80211 to use the skb control block.
++	 */
++	if (__predict_false(info == NULL))
++		info = IEEE80211_SKB_CB(skb);
+ 	if (info->flags & IEEE80211_TX_STAT_ACK) {
+ 		status = 0;	/* No error. */
+ 		txs.status = IEEE80211_RATECTL_TX_SUCCESS;

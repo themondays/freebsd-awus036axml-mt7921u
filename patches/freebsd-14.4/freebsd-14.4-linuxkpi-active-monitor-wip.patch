@@ -1,0 +1,191 @@
+diff --git sys/compat/linuxkpi/common/src/linux_80211.c sys/compat/linuxkpi/common/src/linux_80211.c
+index cd7898a..67722f5 100644
+--- sys/compat/linuxkpi/common/src/linux_80211.c
++++ sys/compat/linuxkpi/common/src/linux_80211.c
+@@ -3610,12 +3610,16 @@ struct fsm_state {
+ 	{ IEEE80211_S_INIT,	IEEE80211_S_INIT, NULL },
+ };
+ 
++static bool lkpi_lhw_has_running_monitor_vif(struct lkpi_hw *);
++static int lkpi_hw_set_monitor(struct ieee80211_hw *, bool);
++
+ static int
+ lkpi_iv_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
+ {
+ 	struct ieee80211com *ic;
+ 	struct lkpi_hw *lhw;
+ 	struct lkpi_vif *lvif;
++	struct ieee80211_hw *hw;
+ 	struct ieee80211_vif *vif;
+ 	struct fsm_state *s;
+ 	enum ieee80211_state ostate;
+@@ -3643,6 +3647,32 @@ lkpi_iv_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
+ 
+ 		s = sta_state_fsm;
+ 
++	} else if (vap->iv_opmode == IEEE80211_M_MONITOR) {
++
++		lhw = ic->ic_softc;
++		hw = LHW_TO_HW(lhw);
++		lvif = VAP_TO_LVIF(vap);
++
++		error = lvif->iv_newstate(vap, nstate, arg);
++		if (error != 0)
++			return (error);
++
++		if (nstate == IEEE80211_S_RUN) {
++			error = lkpi_hw_set_monitor(hw, true);
++		} else if (nstate == IEEE80211_S_INIT &&
++		    !lkpi_lhw_has_running_monitor_vif(lhw)) {
++			error = lkpi_hw_set_monitor(hw, false);
++		} else {
++			error = 0;
++		}
++		if (error != 0) {
++			ic_printf(vap->iv_ic, "%s: monitor config returned %d\n",
++			    __func__, error);
++			return (error);
++		}
++
++		return (0);
++
+ 	} else {
+ 		ic_printf(vap->iv_ic, "%s: only station mode currently supported: "
+ 		    "cap %p iv_opmode %d\n", __func__, vap, vap->iv_opmode);
+@@ -3852,6 +3882,55 @@ lkpi_vif_iflladdr(void *arg, struct ifnet *ifp)
+ 	NET_EPOCH_EXIT(et);
+ }
+ 
++static bool
++lkpi_ic_has_vap_opmode(struct ieee80211com *ic, enum ieee80211_opmode opmode)
++{
++	struct ieee80211vap *vap;
++
++	TAILQ_FOREACH(vap, &ic->ic_vaps, iv_next) {
++		if (vap->iv_opmode == opmode)
++			return (true);
++	}
++
++	return (false);
++}
++
++static bool
++lkpi_lhw_has_running_monitor_vif(struct lkpi_hw *lhw)
++{
++	struct lkpi_vif *lvif;
++
++	TAILQ_FOREACH(lvif, &lhw->lvif_head, lvif_entry) {
++		struct ieee80211vap *vap;
++
++		vap = LVIF_TO_VAP(lvif);
++		if (vap->iv_opmode == IEEE80211_M_MONITOR &&
++		    vap->iv_state != IEEE80211_S_INIT)
++			return (true);
++	}
++
++	return (false);
++}
++
++static int
++lkpi_hw_set_monitor(struct ieee80211_hw *hw, bool enable)
++{
++	bool monitor;
++	int error;
++
++	monitor = (hw->conf.flags & IEEE80211_CONF_MONITOR) != 0;
++	if (monitor == enable)
++		return (0);
++
++	if (enable)
++		hw->conf.flags |= IEEE80211_CONF_MONITOR;
++	else
++		hw->conf.flags &= ~IEEE80211_CONF_MONITOR;
++
++	error = lkpi_80211_mo_config(hw, IEEE80211_CONF_CHANGE_MONITOR);
++	return (error == EOPNOTSUPP ? 0 : error);
++}
++
+ static struct ieee80211vap *
+ lkpi_ic_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ],
+     int unit, enum ieee80211_opmode opmode, int flags,
+@@ -3868,10 +3947,15 @@ lkpi_ic_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ],
+ 	struct sysctl_oid *node;
+ 	size_t len;
+ 	int error, i;
++	bool first_vap;
+ 	uint16_t ac;
+ 
+-	if (!TAILQ_EMPTY(&ic->ic_vaps))	/* 1 so far. Add <n> once this works. */
++	first_vap = TAILQ_EMPTY(&ic->ic_vaps);
++	if (!first_vap && (opmode != IEEE80211_M_MONITOR ||
++	    lkpi_ic_has_vap_opmode(ic, IEEE80211_M_MONITOR))) {
++		/* Keep non-monitor operation single-VAP until more is proven. */
+ 		return (NULL);
++	}
+ 
+ 	lhw = ic->ic_softc;
+ 	hw = LHW_TO_HW(lhw);
+@@ -3955,13 +4039,15 @@ lkpi_ic_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ],
+ 	IMPROVE();
+ 
+ 	wiphy_lock(hw->wiphy);
+-	error = lkpi_80211_mo_start(hw);
+-	if (error != 0) {
+-		wiphy_unlock(hw->wiphy);
+-		ic_printf(ic, "%s: failed to start hw: %d\n", __func__, error);
+-		mtx_destroy(&lvif->mtx);
+-		free(lvif, M_80211_VAP);
+-		return (NULL);
++	if (first_vap) {
++		error = lkpi_80211_mo_start(hw);
++		if (error != 0) {
++			wiphy_unlock(hw->wiphy);
++			ic_printf(ic, "%s: failed to start hw: %d\n", __func__, error);
++			mtx_destroy(&lvif->mtx);
++			free(lvif, M_80211_VAP);
++			return (NULL);
++		}
+ 	}
+ 
+ 	error = lkpi_80211_mo_add_interface(hw, vif);
+@@ -4110,6 +4196,8 @@ lkpi_ic_vap_delete(struct ieee80211vap *vap)
+ 	struct ieee80211_hw *hw;
+ 	struct lkpi_vif *lvif;
+ 	struct ieee80211_vif *vif;
++	bool last_vap;
++	bool was_monitor;
+ 
+ 	lvif = VAP_TO_LVIF(vap);
+ 	vif = LVIF_TO_VIF(lvif);
+@@ -4117,6 +4205,7 @@ lkpi_ic_vap_delete(struct ieee80211vap *vap)
+ 	lhw = ic->ic_softc;
+ 	hw = LHW_TO_HW(lhw);
+ 
++	was_monitor = (vap->iv_opmode == IEEE80211_M_MONITOR);
+ 	EVENTHANDLER_DEREGISTER(iflladdr_event, lvif->lvif_ifllevent);
+ 
+ 	/* Clear up per-VIF/VAP sysctls. */
+@@ -4124,6 +4213,7 @@ lkpi_ic_vap_delete(struct ieee80211vap *vap)
+ 
+ 	LKPI_80211_LHW_LVIF_LOCK(lhw);
+ 	TAILQ_REMOVE(&lhw->lvif_head, lvif, lvif_entry);
++	last_vap = TAILQ_EMPTY(&lhw->lvif_head);
+ 	LKPI_80211_LHW_LVIF_UNLOCK(lhw);
+ 
+ 	ieee80211_ratectl_deinit(vap);
+@@ -4131,10 +4221,13 @@ lkpi_ic_vap_delete(struct ieee80211vap *vap)
+ 
+ 	IMPROVE("clear up other bits in this state");
+ 
++	if (was_monitor && !lkpi_lhw_has_running_monitor_vif(lhw))
++		(void)lkpi_hw_set_monitor(hw, false);
++
+ 	lkpi_80211_mo_remove_interface(hw, vif);
+ 
+-	/* Single VAP, so we can do this here. */
+-	lkpi_80211_mo_stop(hw, false);			/* XXX SUSPEND */
++	if (last_vap)
++		lkpi_80211_mo_stop(hw, false);		/* XXX SUSPEND */
+ 
+ 	mtx_destroy(&lvif->mtx);
+ 	free(lvif, M_80211_VAP);

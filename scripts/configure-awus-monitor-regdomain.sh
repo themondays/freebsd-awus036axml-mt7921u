@@ -8,16 +8,20 @@ country="AU"
 regdomain=""
 assume_yes="no"
 list_only="no"
+reset_parent_vaps="no"
 
 usage()
 {
 	cat <<EOF
 Usage: sudo $0 --yes [--parent mt7921u1] [--iface wlan2] [--country AU] [--channel 157]
        sudo $0 --yes --regdomain DEBUG [--iface wlan2] [--channel 157]
+       sudo $0 --yes --reset-parent-vaps [options]
 
 Configures an AWUS036AXML/mt7921u monitor VAP for Kismet channel hopping.
 With the AU regdomain patch installed, country AU exposes the native Australian
 RLAN monitor channel set. Use --regdomain DEBUG only as a broad capture fallback.
+By default this preserves existing station VAPs so active monitoring can be
+tested. Use --reset-parent-vaps for isolated monitor setup or channel recovery.
 EOF
 }
 
@@ -49,6 +53,9 @@ while [ $# -gt 0 ]; do
 		--list-only)
 			list_only="yes"
 			;;
+		--reset-parent-vaps)
+			reset_parent_vaps="yes"
+			;;
 		-h|--help)
 			usage
 			exit 0
@@ -77,11 +84,16 @@ if [ -z "$parent" ]; then
 fi
 
 if [ "$assume_yes" != "yes" ] && [ "$list_only" != "yes" ]; then
-	echo "This will down all wlan VAPs on $parent, create/configure $iface,"
+	echo "This will create/configure monitor VAP $iface on $parent,"
 	if [ -n "$regdomain" ]; then
 		echo "set regdomain $regdomain, and leave $iface up in monitor mode."
 	else
 		echo "set country $country, and leave $iface up in monitor mode."
+	fi
+	if [ "$reset_parent_vaps" = "yes" ]; then
+		echo "It will also down all existing wlan VAPs on $parent first."
+	else
+		echo "Existing station VAPs on $parent will be preserved."
 	fi
 	echo "Re-run with --yes to continue."
 	exit 2
@@ -97,8 +109,28 @@ down_parent_vaps()
 	done
 }
 
+run_or_warn()
+{
+	desc="$1"
+	shift
+
+	if "$@"; then
+		return 0
+	fi
+
+	rc="$?"
+	if [ "$reset_parent_vaps" = "yes" ]; then
+		return "$rc"
+	fi
+
+	echo "$iface: $desc failed while station VAPs are preserved; continuing" >&2
+	return 0
+}
+
 if [ "$list_only" != "yes" ]; then
-	down_parent_vaps
+	if [ "$reset_parent_vaps" = "yes" ]; then
+		down_parent_vaps
+	fi
 
 	if ! ifconfig "$iface" >/dev/null 2>&1; then
 		ifconfig "$iface" create wlandev "$parent" wlanmode monitor
@@ -107,14 +139,17 @@ if [ "$list_only" != "yes" ]; then
 	ifconfig "$iface" down || true
 	if [ -n "$regdomain" ]; then
 		# Do not append country here: country remapping can hide channels.
-		ifconfig "$iface" regdomain "$regdomain"
+		run_or_warn "setting regdomain $regdomain" \
+		    ifconfig "$iface" regdomain "$regdomain"
 	else
-		ifconfig "$iface" country "$country"
+		run_or_warn "setting country $country" \
+		    ifconfig "$iface" country "$country"
 	fi
-	ifconfig "$iface" up
+	run_or_warn "bringing monitor VAP up" ifconfig "$iface" up
 
 	if [ -n "$channel" ]; then
-		ifconfig "$iface" channel "$channel"
+		run_or_warn "setting channel $channel" \
+		    ifconfig "$iface" channel "$channel"
 	fi
 fi
 

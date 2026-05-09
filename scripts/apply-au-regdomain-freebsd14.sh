@@ -8,15 +8,29 @@ fi
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 root_dir="$(dirname -- "$script_dir")"
-default_patch="$root_dir/patches/freebsd-14.3/freebsd-14.3-lib80211-au-regdomain-wip.patch"
+src="${SRC:-/usr/src}"
+
+detect_freebsd_minor()
+{
+	if [ -r "$src/sys/conf/newvers.sh" ]; then
+		awk -F\" '/^REVISION=/{ print $2; exit }' "$src/sys/conf/newvers.sh"
+	else
+		freebsd-version -u 2>/dev/null |
+		    sed -n 's/^\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' |
+		    sed -n '1p'
+	fi
+}
+
+freebsd_minor="${FREEBSD_MINOR:-$(detect_freebsd_minor)}"
+patch_set="${PATCH_SET:-freebsd-$freebsd_minor}"
+default_patch="$root_dir/patches/$patch_set/$patch_set-lib80211-au-regdomain-wip.patch"
 if [ ! -r "$default_patch" ]; then
-	default_patch="/usr/local/share/awus036axml/patches/freebsd-14.3/freebsd-14.3-lib80211-au-regdomain-wip.patch"
+	default_patch="/usr/local/share/awus036axml/patches/$patch_set/$patch_set-lib80211-au-regdomain-wip.patch"
 fi
 if [ ! -r "$default_patch" ]; then
 	default_patch="/usr/local/share/awus036axml/patches/freebsd-14.3-lib80211-au-regdomain-wip.patch"
 fi
 patch_file="${PATCH_FILE:-$default_patch}"
-src="${SRC:-/usr/src}"
 
 case "${1:-}" in
 	--yes)
@@ -30,6 +44,7 @@ esac
 
 if [ ! -r "$patch_file" ]; then
 	echo "Missing patch: $patch_file" >&2
+	echo "Set FREEBSD_MINOR=14.3 or FREEBSD_MINOR=14.4 if auto-detection is wrong." >&2
 	exit 1
 fi
 
@@ -42,8 +57,13 @@ regdomain_xml="$src/lib/lib80211/regdomain.xml"
 if grep -q '<rd id="au">' "$regdomain_xml" &&
     grep -q '<isocc>36</isocc> <name>Australia</name> <rd ref="au"/>' "$regdomain_xml"; then
 	echo "Patch already appears to be applied."
-elif patch -d "$src" -p0 --dry-run < "$patch_file" >/tmp/au-regdomain-patch-check.log 2>&1; then
-	patch -d "$src" -p0 < "$patch_file"
+elif patch -d "$src" -p0 -C -t < "$patch_file" >/tmp/au-regdomain-patch-check.log 2>&1; then
+	if grep -q 'Reversed (or previously applied)' /tmp/au-regdomain-patch-check.log ||
+	    grep -q 'Assuming -R' /tmp/au-regdomain-patch-check.log; then
+		echo "Patch dry-run reports reversed or already applied."
+	else
+		patch -d "$src" -p0 -t < "$patch_file"
+	fi
 else
 	cat /tmp/au-regdomain-patch-check.log >&2
 	exit 1

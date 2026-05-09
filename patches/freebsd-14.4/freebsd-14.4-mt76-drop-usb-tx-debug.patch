@@ -1,0 +1,119 @@
+diff --git sys/contrib/dev/mediatek/mt76/mt792x_core.c sys/contrib/dev/mediatek/mt76/mt792x_core.c
+index 0ce7a5f..ee4ae09 100644
+--- sys/contrib/dev/mediatek/mt76/mt792x_core.c
++++ sys/contrib/dev/mediatek/mt76/mt792x_core.c
+@@ -61,13 +61,6 @@ void mt792x_tx(struct ieee80211_hw *hw, struct ieee80211_tx_control *control,
+ 	struct mt76_wcid *wcid = &dev->mt76.global_wcid;
+ 	int qid;
+ 
+-#if defined(__FreeBSD__)
+-	static unsigned int fbsd_tx_log_count;
+-	if (fbsd_tx_log_count++ < 32)
+-		pr_err("mt792x_tx: len=%u qmap=%u sta=%d vif=%d flags=0x%x\n",
+-		       skb->len, skb_get_queue_mapping(skb), control->sta != NULL,
+-		       vif != NULL, info->flags);
+-#endif
+ 	if (control->sta) {
+ 		struct mt792x_sta *sta;
+ 
+@@ -83,18 +76,10 @@ void mt792x_tx(struct ieee80211_hw *hw, struct ieee80211_tx_control *control,
+ 	}
+ 
+ 	if (mt76_connac_pm_ref(mphy, &dev->pm)) {
+-#if defined(__FreeBSD__)
+-		if (fbsd_tx_log_count <= 32)
+-			pr_err("mt792x_tx: pm_ref ok\n");
+-#endif
+ 		mt76_tx(mphy, control->sta, wcid, skb);
+ 		mt76_connac_pm_unref(mphy, &dev->pm);
+ 		return;
+ 	}
+-#if defined(__FreeBSD__)
+-	if (fbsd_tx_log_count <= 32)
+-		pr_err("mt792x_tx: pm_ref failed, queueing for wake\n");
+-#endif
+ 	qid = skb_get_queue_mapping(skb);
+ 	if (qid >= MT_TXQ_PSD) {
+ 		qid = IEEE80211_AC_BE;
+diff --git sys/contrib/dev/mediatek/mt76/usb.c sys/contrib/dev/mediatek/mt76/usb.c
+index f375d4c..cedb506 100644
+--- sys/contrib/dev/mediatek/mt76/usb.c
++++ sys/contrib/dev/mediatek/mt76/usb.c
+@@ -54,7 +54,6 @@ MODULE_PARM_DESC(disable_usb_sg, "Disable usb scatter-gather support");
+ 	 UE_GET_DIR((_ep)->bEndpointAddress) == UE_DIR_OUT)
+ #define	usb_endpoint_num(_ep)	UE_GET_ADDR((_ep)->bEndpointAddress)
+ #define	MT76U_FBSD_BULK_BUFSIZE	(64 * 1024)
+-static unsigned int fbsd_usb_tx_log_count;
+ #endif
+ 
+ static struct usb_interface *
+@@ -1028,30 +1027,19 @@ mt76u_tx_queue_skb(struct mt76_dev *dev, struct mt76_queue *q,
+ 	u16 idx = q->head;
+ 	int err;
+ 
+-#if defined(__FreeBSD__)
+-	if (fbsd_usb_tx_log_count++ < 32)
+-		dev_err(dev->dev, "mt76u_tx_queue_skb: qid=%d len=%u hw_idx=%u head=%u queued=%u\n",
+-			qid, skb->len, q->hw_idx, q->head, q->queued);
+-#endif
+ 	if (q->queued == q->ndesc)
+ 		return -ENOSPC;
+ 
+ 	skb->prev = skb->next = NULL;
+ 	err = dev->drv->tx_prepare_skb(dev, NULL, qid, wcid, sta, &tx_info);
+ 	if (err < 0) {
+-#if defined(__FreeBSD__)
+-		if (fbsd_usb_tx_log_count <= 32)
+-			dev_err(dev->dev, "mt76u_tx_queue_skb: prepare failed %d\n", err);
+-#endif
++		dev_err(dev->dev, "mt76u_tx_queue_skb: prepare failed %d\n", err);
+ 		return err;
+ 	}
+ 
+ 	err = mt76u_tx_setup_buffers(dev, tx_info.skb, q->entry[idx].urb);
+ 	if (err < 0) {
+-#if defined(__FreeBSD__)
+-		if (fbsd_usb_tx_log_count <= 32)
+-			dev_err(dev->dev, "mt76u_tx_queue_skb: setup failed %d\n", err);
+-#endif
++		dev_err(dev->dev, "mt76u_tx_queue_skb: setup failed %d\n", err);
+ 		return err;
+ 	}
+ 
+@@ -1063,11 +1051,6 @@ mt76u_tx_queue_skb(struct mt76_dev *dev, struct mt76_queue *q,
+ 	q->entry[idx].skb = tx_info.skb;
+ 	q->entry[idx].wcid = 0xffff;
+ 	q->queued++;
+-#if defined(__FreeBSD__)
+-	if (fbsd_usb_tx_log_count <= 32)
+-		dev_err(dev->dev, "mt76u_tx_queue_skb: queued idx=%u first=%u head=%u queued=%u\n",
+-			idx, q->first, q->head, q->queued);
+-#endif
+ 
+ 	return idx;
+ }
+@@ -1080,13 +1063,6 @@ static void mt76u_tx_kick(struct mt76_dev *dev, struct mt76_queue *q)
+ 	while (q->first != q->head) {
+ 		urb = q->entry[q->first].urb;
+ 
+-#if defined(__FreeBSD__)
+-		if (fbsd_usb_tx_log_count <= 32)
+-			dev_err(dev->dev, "mt76u_tx_kick: submit first=%u head=%u ep=0x%x len=%u\n",
+-				q->first, q->head,
+-				urb->endpoint ? (unsigned int)urb->endpoint->desc.bEndpointAddress : 0,
+-				urb->transfer_buffer_length);
+-#endif
+ 		trace_submit_urb(dev, urb);
+ 		err = usb_submit_urb(urb, GFP_ATOMIC);
+ 		if (err < 0) {
+@@ -1097,10 +1073,6 @@ static void mt76u_tx_kick(struct mt76_dev *dev, struct mt76_queue *q)
+ 					err);
+ 			break;
+ 		}
+-#if defined(__FreeBSD__)
+-		if (fbsd_usb_tx_log_count <= 32)
+-			dev_err(dev->dev, "mt76u_tx_kick: submit ok\n");
+-#endif
+ 		q->first = (q->first + 1) % q->ndesc;
+ 	}
+ }

@@ -16,8 +16,17 @@ work/
 *.pkg
 *.txz
 *.tbz
+.depend*
+*.pieo
+*.bco
+*.llo
+*.bc
+*.ll
+*.full
+*.debug
 *.o
 *.ko
+tools/mtkbtfw/mtkbtfw
 
 # Kernel crash artifacts.
 *.core

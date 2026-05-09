@@ -1,0 +1,76 @@
+--- sys/compat/linuxkpi/common/src/linux_80211.c
++++ sys/compat/linuxkpi/common/src/linux_80211.c
+@@ -6927,6 +6927,30 @@
+ 	return;
+ }
+ 
++static bool
++lkpi_mbuf_rx_chain_sane(struct mbuf *m, int *pktlenp)
++{
++	struct mbuf *n;
++	int pktlen;
++
++	if (__predict_false(m == NULL || (m->m_flags & M_PKTHDR) == 0 ||
++	    m->m_pkthdr.len < sizeof(struct ieee80211_frame_ack)))
++		return (false);
++
++	pktlen = 0;
++	for (n = m; n != NULL; n = n->m_next) {
++		if (__predict_false(n->m_len < 0 ||
++		    n->m_len > m->m_pkthdr.len ||
++		    pktlen > m->m_pkthdr.len - n->m_len))
++			return (false);
++		pktlen += n->m_len;
++	}
++	if (pktlenp != NULL)
++		*pktlenp = pktlen;
++
++	return (pktlen == m->m_pkthdr.len);
++}
++
+ static void
+ lkpi_80211_lhw_rxq_rx_one(struct lkpi_hw *lhw, struct mbuf *m)
+ {
+@@ -6953,14 +6977,12 @@
+ #endif
+ 
+ 	/*
+-	 * The all-VAP RX path clones frames with m_dup().  m_dup() assumes
+-	 * m_pkthdr.len matches the actual mbuf chain length and can fault if a
+-	 * LinuxKPI RX skb produced a truncated mbuf.  Drop malformed frames
+-	 * before net80211 fanout rather than letting monitor/promisc traffic
+-	 * panic the kernel.
++	 * The all-VAP RX path clones frames with m_dup().  m_dup() assumes a
++	 * valid packet-header mbuf and that m_pkthdr.len matches the actual
++	 * mbuf chain length.  Drop malformed frames before net80211 fanout
++	 * rather than letting monitor/promisc traffic panic the kernel.
+ 	 */
+-	pktlen = m_length(m, NULL);
+-	if (__predict_false(pktlen != m->m_pkthdr.len)) {
++	if (__predict_false(!lkpi_mbuf_rx_chain_sane(m, &pktlen))) {
+ 		if (ni != NULL)
+ 			ieee80211_free_node(ni);
+ 		counter_u64_add(lhw->ic->ic_ierrors, 1);
+@@ -7272,8 +7294,8 @@
+ 		counter_u64_add(ic->ic_ierrors, 1);
+ 		goto err;
+ 	}
+-	mlen = m_length(m, NULL);
+-	if (__predict_false(mlen != offset || m->m_pkthdr.len != offset)) {
++	if (__predict_false(!lkpi_mbuf_rx_chain_sane(m, &mlen) ||
++	    mlen != offset)) {
+ 		m_freem(m);
+ 		counter_u64_add(ic->ic_ierrors, 1);
+ 		goto err;
+@@ -7427,6 +7449,11 @@
+ 			goto err;
+ 		}
+ 		m_adj(m, -IEEE80211_CRC_LEN);
++		if (__predict_false(!lkpi_mbuf_rx_chain_sane(m, &mlen))) {
++			m_freem(m);
++			counter_u64_add(ic->ic_ierrors, 1);
++			goto err;
++		}
+ 	}
+ 
+ #if 0

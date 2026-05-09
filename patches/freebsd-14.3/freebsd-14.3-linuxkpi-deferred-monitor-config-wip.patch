@@ -1,0 +1,142 @@
+--- sys/compat/linuxkpi/common/src/linux_80211.c
++++ sys/compat/linuxkpi/common/src/linux_80211.c
+@@ -3612,6 +3612,8 @@
+ 
+ static bool lkpi_lhw_has_running_monitor_vif(struct lkpi_hw *);
+ static int lkpi_hw_set_monitor(struct ieee80211_hw *, bool);
++static void lkpi_hw_schedule_monitor(struct ieee80211_hw *, bool);
++static void lkpi_hw_monitor_task(void *, int);
+ 
+ static int
+ lkpi_iv_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
+@@ -3657,19 +3659,11 @@
+ 		if (error != 0)
+ 			return (error);
+ 
+-		if (nstate == IEEE80211_S_RUN) {
+-			error = lkpi_hw_set_monitor(hw, true);
+-		} else if (nstate == IEEE80211_S_INIT &&
+-		    !lkpi_lhw_has_running_monitor_vif(lhw)) {
+-			error = lkpi_hw_set_monitor(hw, false);
+-		} else {
+-			error = 0;
+-		}
+-		if (error != 0) {
+-			ic_printf(vap->iv_ic, "%s: monitor config returned %d\n",
+-			    __func__, error);
+-			return (error);
+-		}
++		if (nstate == IEEE80211_S_RUN)
++			lkpi_hw_schedule_monitor(hw, true);
++		else if (nstate == IEEE80211_S_INIT &&
++		    !lkpi_lhw_has_running_monitor_vif(lhw))
++			lkpi_hw_schedule_monitor(hw, false);
+ 
+ 		return (0);
+ 
+@@ -3931,6 +3925,58 @@
+ 	return (error == EOPNOTSUPP ? 0 : error);
+ }
+ 
++static void
++lkpi_hw_schedule_monitor(struct ieee80211_hw *hw, bool enable)
++{
++	struct lkpi_hw *lhw;
++
++	lhw = HW_TO_LHW(hw);
++
++	mtx_lock(&lhw->monitor_mtx);
++	lhw->monitor_desired = enable;
++	lhw->monitor_generation++;
++	mtx_unlock(&lhw->monitor_mtx);
++
++	taskqueue_enqueue(taskqueue_thread, &lhw->monitor_task);
++}
++
++static void
++lkpi_hw_monitor_task(void *ctx, int pending)
++{
++	struct ieee80211_hw *hw;
++	struct lkpi_hw *lhw;
++	uint32_t generation;
++	bool enable;
++	int error;
++
++	lhw = ctx;
++	hw = LHW_TO_HW(lhw);
++
++	for (;;) {
++		mtx_lock(&lhw->monitor_mtx);
++		enable = lhw->monitor_desired;
++		generation = lhw->monitor_generation;
++		mtx_unlock(&lhw->monitor_mtx);
++
++		/*
++		 * mt7921 monitor changes send MCU commands and may sleep.  Keep
++		 * this path out of lkpi_iv_newstate(), where net80211 holds the
++		 * com lock while Kismet/BPF is setting radiotap DLT state.
++		 */
++		error = lkpi_hw_set_monitor(hw, enable);
++		if (error != 0)
++			ic_printf(lhw->ic, "%s: monitor config returned %d\n",
++			    __func__, error);
++
++		mtx_lock(&lhw->monitor_mtx);
++		if (generation == lhw->monitor_generation) {
++			mtx_unlock(&lhw->monitor_mtx);
++			break;
++		}
++		mtx_unlock(&lhw->monitor_mtx);
++	}
++}
++
+ static struct ieee80211vap *
+ lkpi_ic_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ],
+     int unit, enum ieee80211_opmode opmode, int flags,
+@@ -4222,7 +4268,7 @@
+ 	IMPROVE("clear up other bits in this state");
+ 
+ 	if (was_monitor && !lkpi_lhw_has_running_monitor_vif(lhw))
+-		(void)lkpi_hw_set_monitor(hw, false);
++		lkpi_hw_schedule_monitor(hw, false);
+ 
+ 	lkpi_80211_mo_remove_interface(hw, vif);
+ 
+@@ -6190,6 +6236,10 @@
+ 	mbufq_init(&lhw->rxq, 32 * NAPI_POLL_WEIGHT);
+ 	lhw->rxq_stopped = false;
+ 
++	mtx_init(&lhw->monitor_mtx, "lhw-monitor", NULL, MTX_DEF);
++	TASK_INIT(&lhw->monitor_task, 0, lkpi_hw_monitor_task, lhw);
++	lhw->monitor_desired = false;
++
+ 	/*
+ 	 * XXX-BZ TODO make sure there is a "_null" function to all ops
+ 	 * not initialized.
+@@ -6215,6 +6265,11 @@
+ 	int ac;
+ 
+ 	lhw = HW_TO_LHW(hw);
++
++	while (taskqueue_cancel(taskqueue_thread, &lhw->monitor_task, NULL) != 0)
++		taskqueue_drain(taskqueue_thread, &lhw->monitor_task);
++	mtx_destroy(&lhw->monitor_mtx);
++
+ 	free(lhw->ic, M_LKPI80211);
+ 	lhw->ic = NULL;
+ 
+--- sys/compat/linuxkpi/common/src/linux_80211.h
++++ sys/compat/linuxkpi/common/src/linux_80211.h
+@@ -239,6 +239,12 @@
+ 	struct mbufq		rxq;
+ 	struct mtx		rxq_mtx;
+ 
++	/* Deferred monitor config; mt7921 sniffer MCU commands may sleep. */
++	struct task		monitor_task;
++	struct mtx		monitor_mtx;
++	uint32_t		monitor_generation;
++	bool			monitor_desired;
++
+ 	/* Scan functions we overload to handle depending on scan mode. */
+ 	void                    (*ic_scan_curchan)(struct ieee80211_scan_state *,
+ 				    unsigned long);

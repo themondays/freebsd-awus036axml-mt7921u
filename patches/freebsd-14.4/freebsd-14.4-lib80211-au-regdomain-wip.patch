@@ -1,0 +1,219 @@
+diff --git lib/lib80211/regdomain.xml lib/lib80211/regdomain.xml
+index 16b7444..bc7d177 100644
+--- lib/lib80211/regdomain.xml
++++ lib/lib80211/regdomain.xml
+@@ -40,6 +40,205 @@
+   <sku>0x1ff</sku>
+ </rd>
+ 
++<!-- Australia RLAN, based on ACMA LIPD Class Licence 2025 Table 8.
++     5150-5250 MHz is indoor-only, so keep it passive.
++     5250-5350 MHz and 5470-5600/5650-5725 MHz require DFS; this table
++     intentionally leaves the 5600-5650 MHz weather-radar gap out.
++-->
++<rd id="au">
++  <name>AU</name>
++  <sku>0x5e</sku>
++  <defcc ref="AU"/>
++  <netband mode="11b">
++    <band>
++      <freqband ref="F1_2412_2472"/>
++      <maxpower>30</maxpower>
++      <flags>IEEE80211_CHAN_B</flags>
++    </band>
++  </netband>
++  <netband mode="11g">
++    <band>
++      <freqband ref="F1_2412_2472"/>
++      <maxpower>30</maxpower>
++      <flags>IEEE80211_CHAN_G</flags>
++    </band>
++  </netband>
++  <netband mode="11a">
++    <band>
++      <freqband ref="F1_5180_5240"/>
++      <maxpower>23</maxpower>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++    </band>
++    <band>
++      <freqband ref="F1_5260_5320"/>
++      <maxpower>20</maxpower>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++      <flags>IEEE80211_CHAN_DFS</flags>
++    </band>
++    <band>
++      <freqband ref="F1_5500_5580"/>
++      <maxpower>24</maxpower>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++      <flags>IEEE80211_CHAN_DFS</flags>
++    </band>
++    <band>
++      <freqband ref="F1_5660_5700"/>
++      <maxpower>24</maxpower>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++      <flags>IEEE80211_CHAN_DFS</flags>
++    </band>
++    <band>
++      <freqband ref="F1_5745_5825"/>
++      <maxpower>30</maxpower>
++    </band>
++  </netband>
++  <netband mode="11ng">
++    <band>
++      <freqband ref="F1_2412_2472"/>
++      <maxpower>30</maxpower>
++      <flags>IEEE80211_CHAN_G</flags>
++      <flags>IEEE80211_CHAN_HT20</flags>
++    </band>
++    <band>
++      <freqband ref="H4_2412_2472"/>
++      <maxpower>30</maxpower>
++      <flags>IEEE80211_CHAN_G</flags>
++      <flags>IEEE80211_CHAN_HT40</flags>
++    </band>
++  </netband>
++  <netband mode="11na">
++    <band>
++      <freqband ref="F1_5180_5240"/>
++      <maxpower>23</maxpower>
++      <flags>IEEE80211_CHAN_HT20</flags>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++    </band>
++    <band>
++      <freqband ref="H4_5180_5240"/>
++      <maxpower>23</maxpower>
++      <flags>IEEE80211_CHAN_HT40</flags>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++    </band>
++    <band>
++      <freqband ref="F1_5260_5320"/>
++      <maxpower>20</maxpower>
++      <flags>IEEE80211_CHAN_HT20</flags>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++      <flags>IEEE80211_CHAN_DFS</flags>
++    </band>
++    <band>
++      <freqband ref="H4_5260_5320"/>
++      <maxpower>20</maxpower>
++      <flags>IEEE80211_CHAN_HT40</flags>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++      <flags>IEEE80211_CHAN_DFS</flags>
++    </band>
++    <band>
++      <freqband ref="F1_5500_5580"/>
++      <maxpower>24</maxpower>
++      <flags>IEEE80211_CHAN_HT20</flags>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++      <flags>IEEE80211_CHAN_DFS</flags>
++    </band>
++    <band>
++      <freqband ref="H4_5500_5580"/>
++      <maxpower>24</maxpower>
++      <flags>IEEE80211_CHAN_HT40</flags>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++      <flags>IEEE80211_CHAN_DFS</flags>
++    </band>
++    <band>
++      <freqband ref="F1_5660_5700"/>
++      <maxpower>24</maxpower>
++      <flags>IEEE80211_CHAN_HT20</flags>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++      <flags>IEEE80211_CHAN_DFS</flags>
++    </band>
++    <band>
++      <freqband ref="H4_5660_5700"/>
++      <maxpower>24</maxpower>
++      <flags>IEEE80211_CHAN_HT40</flags>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++      <flags>IEEE80211_CHAN_DFS</flags>
++    </band>
++    <band>
++      <freqband ref="F1_5745_5825"/>
++      <maxpower>30</maxpower>
++      <flags>IEEE80211_CHAN_HT20</flags>
++    </band>
++    <band>
++      <freqband ref="H4_5745_5825"/>
++      <maxpower>30</maxpower>
++      <flags>IEEE80211_CHAN_HT40</flags>
++    </band>
++  </netband>
++  <netband mode="11ac">
++    <band>
++      <freqband ref="AC1_5180_5240_20"/>
++      <maxpower>23</maxpower>
++      <flags>IEEE80211_CHAN_HT20</flags>
++      <flags>IEEE80211_CHAN_VHT20</flags>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++    </band>
++    <band>
++      <freqband ref="AC1_5180_5240_40"/>
++      <maxpower>23</maxpower>
++      <flags>IEEE80211_CHAN_HT40</flags>
++      <flags>IEEE80211_CHAN_VHT40</flags>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++    </band>
++    <band>
++      <freqband ref="AC1_5180_5240_80"/>
++      <maxpower>23</maxpower>
++      <flags>IEEE80211_CHAN_HT40</flags>
++      <flags>IEEE80211_CHAN_VHT80</flags>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++    </band>
++    <band>
++      <freqband ref="AC2_5260_5340_20"/>
++      <maxpower>20</maxpower>
++      <flags>IEEE80211_CHAN_HT20</flags>
++      <flags>IEEE80211_CHAN_VHT20</flags>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++      <flags>IEEE80211_CHAN_DFS</flags>
++    </band>
++    <band>
++      <freqband ref="AC2_5260_5320_40"/>
++      <maxpower>20</maxpower>
++      <flags>IEEE80211_CHAN_HT40</flags>
++      <flags>IEEE80211_CHAN_VHT40</flags>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++      <flags>IEEE80211_CHAN_DFS</flags>
++    </band>
++    <band>
++      <freqband ref="AC2_5260_5320_80"/>
++      <maxpower>20</maxpower>
++      <flags>IEEE80211_CHAN_HT40</flags>
++      <flags>IEEE80211_CHAN_VHT80</flags>
++      <flags>IEEE80211_CHAN_PASSIVE</flags>
++      <flags>IEEE80211_CHAN_DFS</flags>
++    </band>
++    <band>
++      <freqband ref="AC1_5745_5805_20"/>
++      <maxpower>30</maxpower>
++      <flags>IEEE80211_CHAN_HT20</flags>
++      <flags>IEEE80211_CHAN_VHT20</flags>
++    </band>
++    <band>
++      <freqband ref="AC1_5745_5805_40"/>
++      <maxpower>30</maxpower>
++      <flags>IEEE80211_CHAN_HT40</flags>
++      <flags>IEEE80211_CHAN_VHT40</flags>
++    </band>
++    <band>
++      <freqband ref="AC1_5745_5805_80"/>
++      <maxpower>30</maxpower>
++      <flags>IEEE80211_CHAN_HT40</flags>
++      <flags>IEEE80211_CHAN_VHT80</flags>
++    </band>
++  </netband>
++</rd>
++
+ <rd id="fcc">
+   <name>FCC</name>
+   <sku>0x10</sku>
+@@ -1703,7 +1902,7 @@
+   <isocc>51</isocc> <name>Armenia</name> <rd ref="etsi"/>
+ </country>
+ <country id="AU">
+-  <isocc>36</isocc> <name>Australia</name> <rd ref="row"/>
++  <isocc>36</isocc> <name>Australia</name> <rd ref="au"/>
+ </country>
+ <country id="AT">
+   <isocc>40</isocc> <name>Austria</name> <rd ref="etsi2"/>

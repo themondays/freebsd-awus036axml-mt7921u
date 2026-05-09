@@ -1,0 +1,109 @@
+diff --git sys/contrib/dev/mediatek/mt76/mt792x_usb.c sys/contrib/dev/mediatek/mt76/mt792x_usb.c
+index 641a81d..f4a1e80 100644
+--- sys/contrib/dev/mediatek/mt76/mt792x_usb.c
++++ sys/contrib/dev/mediatek/mt76/mt792x_usb.c
+@@ -299,6 +299,10 @@ void mt792xu_disconnect(struct usb_interface *usb_intf)
+ {
+ 	struct mt792x_dev *dev = usb_get_intfdata(usb_intf);
+ 
++	if (!dev)
++		return;
++	set_bit(MT76_REMOVED, &dev->mphy.state);
++
+ 	cancel_work_sync(&dev->init_work);
+ 	if (!test_bit(MT76_STATE_INITIALIZED, &dev->mphy.state))
+ 		return;
+diff --git sys/contrib/dev/mediatek/mt76/usb.c sys/contrib/dev/mediatek/mt76/usb.c
+index f10ef3e..f375d4c 100644
+--- sys/contrib/dev/mediatek/mt76/usb.c
++++ sys/contrib/dev/mediatek/mt76/usb.c
+@@ -67,11 +67,38 @@ mt76u_get_intf(struct mt76_dev *dev)
+ #endif
+ }
+ 
++#if defined(__FreeBSD__)
++static bool
++mt76u_fbsd_usb_control_removed_error(int ret)
++{
++	switch (ret) {
++	case -ENODEV:
++	case -ESHUTDOWN:
++		return true;
++	default:
++		return false;
++	}
++}
++
++static bool
++mt76u_fbsd_usb_urb_removed_error(int ret)
++{
++	switch (ret) {
++	case -ENODEV:
++	case -ESHUTDOWN:
++	case -EPIPE:
++		return true;
++	default:
++		return false;
++	}
++}
++#endif
++
+ int __mt76u_vendor_request(struct mt76_dev *dev, u8 req, u8 req_type,
+ 			   u16 val, u16 offset, void *buf, size_t len)
+ {
+ 	struct usb_interface *uintf = mt76u_get_intf(dev);
+-	struct usb_device *udev = interface_to_usbdev(uintf);
++	struct usb_device *udev;
+ #if defined(__FreeBSD__)
+ 	struct usb_host_endpoint *pipe;
+ #else
+@@ -81,6 +108,12 @@ int __mt76u_vendor_request(struct mt76_dev *dev, u8 req, u8 req_type,
+ 
+ 	lockdep_assert_held(&dev->usb.usb_ctrl_mtx);
+ 
++	if (!uintf) {
++		set_bit(MT76_REMOVED, &dev->phy.state);
++		return -ENODEV;
++	}
++	udev = interface_to_usbdev(uintf);
++
+ 	pipe = (req_type & USB_DIR_IN) ? usb_rcvctrlpipe(udev, 0)
+ 				       : usb_sndctrlpipe(udev, 0);
+ 	for (i = 0; i < MT_VEND_REQ_MAX_RETRY; i++) {
+@@ -89,6 +122,12 @@ int __mt76u_vendor_request(struct mt76_dev *dev, u8 req, u8 req_type,
+ 
+ 		ret = usb_control_msg(udev, pipe, req, req_type, val,
+ 				      offset, buf, len, MT_VEND_REQ_TOUT_MS);
++#if defined(__FreeBSD__)
++		if (mt76u_fbsd_usb_control_removed_error(ret)) {
++			set_bit(MT76_REMOVED, &dev->phy.state);
++			return ret;
++		}
++#endif
+ 		if (ret == -ENODEV)
+ 			set_bit(MT76_REMOVED, &dev->phy.state);
+ 		if (ret >= 0 || ret == -ENODEV)
+@@ -668,6 +707,13 @@ static void mt76u_complete_rx(struct urb *urb)
+ 
+ 	trace_rx_urb(dev, urb);
+ 
++#if defined(__FreeBSD__)
++	if (mt76u_fbsd_usb_urb_removed_error(urb->status)) {
++		set_bit(MT76_REMOVED, &dev->phy.state);
++		return;
++	}
++#endif
++
+ 	switch (urb->status) {
+ 	case -ECONNRESET:
+ 	case -ESHUTDOWN:
+@@ -739,6 +785,9 @@ static void mt76u_rx_worker(struct mt76_worker *w)
+ 	struct mt76_dev *dev = container_of(usb, struct mt76_dev, usb);
+ 	int i;
+ 
++	if (test_bit(MT76_REMOVED, &dev->phy.state))
++		return;
++
+ 	rcu_read_lock();
+ 	mt76_for_each_q_rx(dev, i)
+ 		mt76u_process_rx_queue(dev, &dev->q_rx[i]);

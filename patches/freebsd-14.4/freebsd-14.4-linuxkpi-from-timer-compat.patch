@@ -1,0 +1,15 @@
+diff --git sys/compat/linuxkpi/common/include/linux/timer.h sys/compat/linuxkpi/common/include/linux/timer.h
+--- sys/compat/linuxkpi/common/include/linux/timer.h
++++ sys/compat/linuxkpi/common/include/linux/timer.h
+@@ -52,6 +52,11 @@
+ #else
+ #define	timer_container_of(var, arg, field)				\
+     container_of(arg, typeof(*(var)), field)
++#ifndef from_timer
++/* FreeBSD 14.4 imports still include drivers using from_timer(). */
++#define	from_timer(var, arg, field)					\
++    timer_container_of(var, arg, field)
++#endif
+ #endif
+ 
+ #define	timer_setup(timer, func, flags) do {				\

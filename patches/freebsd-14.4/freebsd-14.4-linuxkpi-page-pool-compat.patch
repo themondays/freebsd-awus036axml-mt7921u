@@ -1,0 +1,34 @@
+diff --git sys/compat/linuxkpi/common/include/net/page_pool.h sys/compat/linuxkpi/common/include/net/page_pool.h
+new file mode 100644
+index 0000000..6560475
+--- /dev/null
++++ sys/compat/linuxkpi/common/include/net/page_pool.h
+@@ -0,0 +1,28 @@
++/*-
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#ifndef	_LINUXKPI_NET_PAGE_POOL_H
++#define	_LINUXKPI_NET_PAGE_POOL_H
++
++#include <net/page_pool/types.h>
++#include <net/page_pool/helpers.h>
++
++struct page_pool_stats {
++};
++
++static inline void
++page_pool_get_stats(struct page_pool *ppool, struct page_pool_stats *stats)
++{
++
++	pr_debug("%s: TODO\n", __func__);
++}
++
++static inline void
++page_pool_ethtool_stats_get(uint64_t *data, const struct page_pool_stats *stats)
++{
++
++	pr_debug("%s: TODO\n", __func__);
++}
++
++#endif	/* _LINUXKPI_NET_PAGE_POOL_H */
